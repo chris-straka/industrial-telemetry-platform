@@ -1,0 +1,99 @@
+{{- range $app, $config := dict
+  "web-api" (dict "port" 8080 "env" (list
+    (dict "name" "Kafka__EventsTopic" "value" "telemetry-events")
+    (dict "name" "Kafka__AlertsTopic" "value" "telemetry-alerts")
+    (dict "name" "Kafka__GroupId" "value" "web-api-dashboard-group")
+    (dict "name" "CORS__AllowedOrigins" "value" "*")
+  ))
+  "ingestion-api" (dict "port" 8080 "env" list)
+  "web-dashboard" (dict "port" 80 "env" (list
+    (dict "name" "VITE_API_URL" "value" "/api")
+  ))
+}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $app }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ $app }}
+  template:
+    metadata:
+      labels:
+        app: {{ $app }}
+        sidecar.istio.io/inject: "true"
+    spec:
+      containers:
+      - name: {{ $app }}
+        image: {{ index $.Values.images $app }}
+        ports:
+        - containerPort: {{ $config.port }}
+        env:
+        - name: ASPNETCORE_ENVIRONMENT
+          value: {{ $.Values.env }}
+        - name: Kafka__BootstrapServers
+          value: {{ $.Values.kafkaBrokers }}
+        - name: OTel__ServiceName
+          value: {{ $app }}
+        - name: OTel__Endpoint
+          value: {{ $.Values.otelEndpoint }}
+        {{- toYaml $config.env | nindent 8 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $app }}
+spec:
+  selector:
+    app: {{ $app }}
+  ports:
+    - port: {{ $config.port }}
+      targetPort: {{ $config.port }}
+{{- end }}
+
+---
+# WORKERS (No Services required, just Deployments)
+{{- range $app, $config := dict
+  "diagnostics-worker" (dict "env" (list
+    (dict "name" "DB__ConnectionString" "value" $.Values.dbConnection)
+    (dict "name" "Kafka__GroupId" "value" "diagnostics-group")
+    (dict "name" "Kafka__TopicName" "value" "telemetry-events")
+    (dict "name" "Gemini__ApiKey" "valueFrom" (dict "secretKeyRef" (dict "name" "api-secrets" "key" "gemini")))
+  ))
+  "sensor-emulator" (dict "env" (list
+    (dict "name" "Ingestion__ApiUrl" "value" "http://ingestion-api:8080")
+  ))
+}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $app }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ $app }}
+  template:
+    metadata:
+      labels:
+        app: {{ $app }}
+        sidecar.istio.io/inject: "true"
+    spec:
+      containers:
+      - name: {{ $app }}
+        image: {{ index $.Values.images $app }}
+        env:
+        - name: ASPNETCORE_ENVIRONMENT
+          value: {{ $.Values.env }}
+        - name: Kafka__BootstrapServers
+          value: {{ $.Values.kafkaBrokers }}
+        - name: OTel__ServiceName
+          value: {{ $app }}
+        - name: OTel__Endpoint
+          value: {{ $.Values.otelEndpoint }}
+        {{- toYaml $config.env | nindent 8 }}
+{{- end }}

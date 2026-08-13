@@ -1,0 +1,55 @@
+# Build results
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+
+# VS Code
+
+# NuGet
+packages/
+*.nupkg
+.nuget/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test Results
+TestResults/
+*.trx
+
+# Publish output
+publish/
+artifacts/
+
+# Local secrets/config
+appsettings.Development.json
+secrets.json
+
+# Coverage reports
+coverage/
+*.coverage
+*.coveragexml
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# My stuff
+AI.md
+docs/*
+

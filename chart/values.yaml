@@ -1,0 +1,12 @@
+env: Development
+otelEndpoint: http://platform-otel-collector:4317
+kafkaBrokers: industrial-platform-kafka:9092
+dbConnection: Host=industrial-platform-postgresql;Database=industrial_db;Username=postgres;Password=password
+geminiApiKey: "your-dev-key"
+
+images:
+    web-api: web-api:latest
+    ingestion-api: ingestion-api:latest
+    diagnostics-worker: diagnostics-worker:latest
+    sensor-emulator: sensor-emulator:latest
+    web-dashboard: web-dashboard:latest

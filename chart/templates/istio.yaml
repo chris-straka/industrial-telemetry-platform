@@ -1,0 +1,49 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+    name: platform-gateway
+spec:
+    selector:
+        istio: ingressgateway # Maps to Istio's default ingress
+    servers:
+        - port:
+              number: 80
+              name: http
+              protocol: HTTP
+          hosts:
+              - "*"
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+    name: platform-routing
+spec:
+    hosts:
+        - "*"
+    gateways:
+        - platform-gateway
+    http:
+        # Route Web API traffic
+        - match:
+              - uri:
+                    prefix: /telemetryHub
+          route:
+              - destination:
+                    host: web-api
+                    port:
+                        number: 8080
+        # Route Ingestion API traffic
+        - match:
+              - uri:
+                    prefix: /api/telemetry
+          route:
+              - destination:
+                    host: ingestion-api
+                    port:
+                        number: 8080
+        # Route everything else to the Dashboard (Frontend)
+        - route:
+              - destination:
+                    host: web-dashboard
+                    port:
+                        number: 80

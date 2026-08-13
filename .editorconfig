@@ -1,0 +1,49 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[.tf]
+indent_size = 2
+
+[.tfvars]
+indent_size = 2
+
+[.tsx]
+indent_size = 2
+
+[Makefile]
+indent_style = tab
+
+[*.mk]
+indent_style = tab
+
+[*.cs]
+# Organize usings (System first, followed by others)
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = true
+
+# Use file-scoped namespaces (e.g. "namespace MyProject;")
+csharp_style_namespace_declarations = file_scoped:warning
+
+# C# standard: Newlines before open braces
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+
+# Indentation rules
+csharp_indent_case_contents = true
+csharp_indent_switch_labels = true
+csharp_indent_labels = flush_left
+
+# Use 'var' when the type is obvious
+csharp_style_var_for_built_in_types = true:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+
+# Expression-bodied members (=>)
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+csharp_style_expression_bodied_constructors = false:silent

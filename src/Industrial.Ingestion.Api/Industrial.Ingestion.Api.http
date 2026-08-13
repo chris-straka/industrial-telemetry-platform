@@ -1,0 +1,10 @@
+@ApiHostAddr = http://localhost:5089
+
+POST {{ApiHostAddr}}/api/telemetry
+Content-Type: application/json
+
+{
+  "equipmentId": "EQ-123",
+  "engineTemperature": 95.5,
+  "oilPressure": 40.2
+}

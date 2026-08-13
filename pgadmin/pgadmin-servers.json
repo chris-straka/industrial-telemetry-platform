@@ -1,0 +1,13 @@
+{
+    "Servers": {
+        "1": {
+            "Name": "Industrial DB",
+            "Group": "Servers",
+            "Host": "postgres",
+            "Port": 5432,
+            "MaintenanceDB": "industrial_db",
+            "Username": "admin",
+            "SSLMode": "prefer"
+        }
+    }
+}

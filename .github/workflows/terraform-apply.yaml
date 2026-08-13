@@ -1,0 +1,32 @@
+name: Terraform Apply
+
+on:
+    push:
+        branches: [main]
+        paths:
+            - "infra/**"
+
+jobs:
+    apply-prod:
+        runs-on: ubuntu-latest
+        environment: prod
+        defaults:
+            run:
+                working-directory: infra
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: 1.15.0
+
+            - name: Terraform Init
+              run: terraform init
+
+            - name: Select workspace
+              run: terraform workspace select prod || terraform workspace new prod
+
+            - name: Apply
+              run: terraform apply -auto-approve -var-file=prod.tfvars -input=false
+              env:
+                  TF_VAR_bootstrap_servers: ${{ secrets.PROD_KAFKA_BOOTSTRAP }}
