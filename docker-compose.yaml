@@ -1,3 +1,4 @@
+# In .NET, Foo__Bar becomes Foo:Bar in code
 services:
     web-dashboard:
         image: node:24-alpine

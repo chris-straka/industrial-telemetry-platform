@@ -1,5 +1,5 @@
 # .PHONY tells Make these are cmd names, not files on my hard drive
-.PHONY: dev k8s compose-up up upd down clean train frontend ls migrate db-update db-check logs run-api run-worker run-em infra-init infra-apply infra-destroy
+.PHONY: dev k8s compose-up up upd down clean train restore frontend ls migrate db-update db-check logs run-api run-worker run-em infra-init infra-apply infra-destroy
 
 dev:
 	tilt up
@@ -22,6 +22,10 @@ clean:
 train:
 	dotnet run --project src/Industrial.Data.ML
 
+# Downloads dependencies for each project (since we're at the root .slnx)
+restore:
+	dotnet restore
+
 frontend:
 	cd src/Industrial.Web.Dashboard && npm run dev
 
@@ -34,9 +38,10 @@ migrate:
 	dotnet ef migrations add $(name) --project src/Industrial.Diagnostics.Worker
 
 # If you're trying to migrate an existing field
-# Expand (add new field), backfill (run a script adding old field data to new field)
-# Switch (deploy code that uses new data field with old data field as a fallback)
-# Contract (drop the old col after everyone is migrated over)
+# 1. Expand (add new field),
+# 2. backfill (run a script adding old field data to new field)
+# 3. Switch (deploy code that uses new data field with old data field as a fallback)
+# 4. Contract (drop the old col after everyone is migrated over)
 
 # In production, we would use CI/CD to apply the SQL migration
 db-update:

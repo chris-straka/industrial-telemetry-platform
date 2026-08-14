@@ -1,9 +1,10 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
-WORKDIR /src
+WORKDIR /app
 COPY ["src/Industrial.Sensor.Emulator/Industrial.Sensor.Emulator.csproj", "Industrial.Sensor.Emulator/"]
 RUN dotnet restore "Industrial.Sensor.Emulator/Industrial.Sensor.Emulator.csproj"
 COPY . .
-WORKDIR "/src/src/Industrial.Sensor.Emulator"
+WORKDIR "/app/src/Industrial.Sensor.Emulator"
+# -c is for C# compiler build optimizations and not the environment
 RUN dotnet publish -c Release -o /app/publish
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0

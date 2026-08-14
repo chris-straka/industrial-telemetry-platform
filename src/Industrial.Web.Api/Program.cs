@@ -43,7 +43,6 @@ builder
     );
 
 builder.Services.AddSignalR();
-builder.Services.AddOpenApi();
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
@@ -56,11 +55,6 @@ builder.Services.AddCors(options =>
 builder.Services.AddHostedService<KafkaSignalRWorker>();
 
 var app = builder.Build();
-
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-}
 
 app.UseCors();
 app.MapHub<TelemetryHub>("/telemetryHub");

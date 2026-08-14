@@ -9,6 +9,27 @@ make dev
 make front
 ```
 
+Diagram of data flow
+
+```
+sensor-emulator
+       │ (HTTP POST)
+       ▼
+ingestion-api
+       │ (Produces to Kafka: telemetry-events)
+       ▼
+ ┌─────────────── Kafka ───────────────┐
+ │                                     │
+ ▼                                     ▼
+diagnostics-worker                 web-api
+ ├─ Runs ML Anomaly Check           ├─ Consumes telemetry-events
+ ├─ Saves to Postgres               ├─ Consumes telemetry-alerts
+ ├─ Calls Gemini AI if Anomaly      └─ Relays live data via SignalR
+ └─ Produces to telemetry-alerts              │
+             │                                ▼
+             └───────────► (Kafka) ──► web-dashboard
+```
+
 # Install
 
 - [tilt](https://tilt.dev/)

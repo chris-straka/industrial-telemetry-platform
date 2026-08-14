@@ -8,10 +8,18 @@ using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Standardized Configuration (Maps Env Vars like Kafka__BootstrapServers automatically)
+// Builder.Configuration pulls from a layered hierarchy
+// 1. appsettings.json
+// 2. appsettings.ENV.json
+// 3. User secrets (local dev only)
+// 4. env variables
+// 5. CLI args
+// In Linux/Bash, env vars can't contain `:`
+// .NET will convert __ from linux/bash/docker into : so it works in appsettings.json
+// Kafka__BootstrapServers -> Kafka:BootstrapServers
 var ServiceName =
     builder.Configuration["OTel:ServiceName"]
-    ?? throw new InvalidOperationException("Missing 'serviceName' configuration.");
+    ?? throw new InvalidOperationException("Missing 'OTel:ServiceName' configuration.");
 var otelEndpoint =
     builder.Configuration["OTel:Endpoint"]
     ?? throw new InvalidOperationException("Missing 'OTel:Endpoint' configuration.");
@@ -23,6 +31,7 @@ var bootstrapServers =
 builder.Logging.AddOpenTelemetry(options =>
 {
     options
+        // resource is the entity that generates the telemetry
         .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(ServiceName))
         .AddOtlpExporter(opt => opt.Endpoint = new Uri(otelEndpoint));
 });
