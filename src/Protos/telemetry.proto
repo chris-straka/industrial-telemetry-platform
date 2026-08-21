@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+option csharp_namespace = "Industrial.Ingestion.Api";
+
+service TelemetryIngestion {
+  // Client streams multiple requests, Server responds once when the stream is closed
+  rpc StreamTelemetry (stream TelemetryRequest) returns (TelemetryResponse);
+}
+
+message TelemetryRequest {
+  string message_id         = 1; // Idempotency key to prevent duplicates
+  string equipment_id       = 2;
+  double engine_temperature = 3;
+  double oil_pressure       = 4;
+}
+
+message TelemetryResponse {
+  bool success = 1;
+  int32 accepted_count = 2;
+}

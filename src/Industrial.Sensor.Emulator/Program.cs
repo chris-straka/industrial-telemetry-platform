@@ -51,7 +51,7 @@ builder
 // 2. Open (Tripped): If failures cross a threshold (e.g., 5 in a row), the circuit "opens" (rejects all new reqs)
 // 3. Half-Open (Testing): After a cooldown (e.g., 30s), it lets one test request through.
 
-// Create the HttpClient client
+// Create the HttpClient client (which is HTTP/1.1 in .NET)
 builder
     .Services.AddHttpClient<EmulatorWorker>(client => client.BaseAddress = new Uri(ingestionApiUrl))
     .AddStandardResilienceHandler(); // Add polly (Resilience)
@@ -62,9 +62,21 @@ builder
 // Register the BackgroundService
 builder.Services.AddHostedService<EmulatorWorker>();
 
-// JSON is text heavy, requires repetitive parsing string->binary->string (CPU intensive)
-// HTTP/1.1 also requires opening/closing connections or dealing with HOL blocking.
-// So I'm using gRCP streams instead
+// HTTP/1.1 also has HOL blocking, where the server must return responses in request order
+// If client sends A (long duration) and B (short duration), B is blocked until A is finished
+
+// This shouldn't happen much in my emulator because
+// 1. Each request is the same duration (less likely to have HOL)
+// 2. I only need one TCP connection per client that can be reused (keep-alive)
+
+// I'm switching to gRCP streams instead though because
+// 1. JSON is text heavy and requires repetitive string parsing to extract data (CPU intensive)
+// 2. Maybe my emulator makes different requests in the future that benefit from HTTP/2 streams
+
+// HTTP/2 fixed HTTP HOL but not TCP HOL
+// If a packet is dropped, TCP has to recover it before delivering any of the later bytes.
+// This blocks all the other streams because streams are an HTTP thing not a TCP thing.
+// HTTP/3 gives streams independent transport-level delivery
 
 var host = builder.Build();
 host.Run(); // Blocks and listens for SIGTERM (Docker) or Ctrl+C

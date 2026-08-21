@@ -15,6 +15,7 @@
       *Tiltfile*)                        echo "starlark" ;;
       *.http)                            echo "http" ;;
       *.sh|*.bash)                       echo "bash" ;;
+      *.proto)                           echo "proto" ;;
       *)                                 echo "text" ;;
     esac
   }

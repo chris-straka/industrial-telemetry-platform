@@ -25,5 +25,8 @@
     "makefile.configureOnOpen": false,
     "[dockerfile]": {
         "editor.defaultFormatter": "ms-azuretools.vscode-containers"
+    },
+    "[proto]": {
+        "editor.defaultFormatter": "DrBlury.protobuf-vsc"
     }
 }

@@ -4,6 +4,7 @@
         <Project Path="src/Industrial.Diagnostics.Worker/Industrial.Diagnostics.Worker.csproj" />
         <Project Path="src/Industrial.Ingestion.Api/Industrial.Ingestion.Api.csproj" />
         <Project Path="src/Industrial.Sensor.Emulator/Industrial.Sensor.Emulator.csproj" />
+        <Project Path="src/Industrial.Sensor.EdgeGateway/Industrial.Sensor.EdgeGateway.csproj" />
         <Project Path="src/Industrial.Web.Api/Industrial.Web.Api.csproj" />
     </Folder>
 </Solution>

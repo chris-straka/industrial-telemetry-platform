@@ -6,10 +6,20 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.36.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.83.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.9.0" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.17.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Protobuf Include="..\Protos\telemetry.proto" GrpcServices="Client" />
   </ItemGroup>
 </Project>
