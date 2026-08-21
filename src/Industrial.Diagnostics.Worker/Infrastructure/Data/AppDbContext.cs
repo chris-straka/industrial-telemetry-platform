@@ -11,7 +11,7 @@ public class AppDbContext : DbContext
     public AppDbContext(DbContextOptions<AppDbContext> options)
         : base(options) { }
 
+    // Set creates an SQL table with TelemetryReading for its fields
     // Set is NOT a mathematical set
-    // Set creates an SQL table using TelemetryReading for its fields
     public DbSet<TelemetryReading> TelemetryReadings => Set<TelemetryReading>();
 }

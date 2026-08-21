@@ -2,32 +2,25 @@
 
 Cloud-hosted .NET Core microservice app that ingests simulated sensor data (e.g., from industrial devices) and flags issues.
 
-```sh
-# Train the model on static data
-make train
-make dev
-make front
-```
-
-Diagram of data flow
+Data flow diagram
 
 ```
-sensor-emulator
-       │ (HTTP POST)
-       ▼
-ingestion-api
-       │ (Produces to Kafka: telemetry-events)
-       ▼
- ┌─────────────── Kafka ───────────────┐
- │                                     │
- ▼                                     ▼
-diagnostics-worker                 web-api
- ├─ Runs ML Anomaly Check           ├─ Consumes telemetry-events
- ├─ Saves to Postgres               ├─ Consumes telemetry-alerts
- ├─ Calls Gemini AI if Anomaly      └─ Relays live data via SignalR
- └─ Produces to telemetry-alerts              │
-             │                                ▼
-             └───────────► (Kafka) ──► web-dashboard
+                         sensor-emulator
+                               │ (HTTP POST)
+                               ▼
+                         ingestion-api
+                               │ (Produces to Kafka: telemetry-events)
+                               ▼
+   ┌───────────────────────── Kafka ────────────┐
+   │                           ▲                │
+   ▼                           │                ▼
+diagnostics-worker             │             web-api
+ ├─ Consumes telemetry-events  │              ├─ Consumes telemetry-events
+ ├─ Runs ML Anomaly Check      │              ├─ Consumes telemetry-alerts
+ ├─ Saves to Postgres          │              └─ Relays live data via SignalR
+ ├─ Calls Gemini AI            │                             │
+ └─ Produces telemetry-alerts──┘                             ▼
+                                                       web-dashboard
 ```
 
 # Install

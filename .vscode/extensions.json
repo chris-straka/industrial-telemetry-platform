@@ -1,10 +1,9 @@
 {
     "recommendations": [
         "ms-dotnettools.csdevkit",
-        "ms-dotnettools.csharp",
-        "ms-dotnettools.vscode-dotnet-runtime",
+        "csharpier.csharpier-vscode",
         "editorconfig.editorconfig",
-        "aaron-bond.better-comments",
-        "hashicorp.terraform"
+        "ms-vscode.makefile-tools",
+        "hashicorp.terraform",
     ],
 }

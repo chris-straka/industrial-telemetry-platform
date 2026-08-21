@@ -57,6 +57,10 @@ db-rows:
 logs:
 	docker compose logs -f $(c)
 
+# Start only backing infrastructure dependencies
+infra-up:
+	docker compose up -d postgres kafka otel-collector loki prometheus tempo
+
 run-api:
 	dotnet run --project src/Industrial.Ingestion.Api
 

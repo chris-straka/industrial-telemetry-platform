@@ -1,13 +1,12 @@
 {{- range $app, $config := dict
-  "web-api" (dict "port" 8080 "env" (list
-    (dict "name" "Kafka__EventsTopic" "value" "telemetry-events")
-    (dict "name" "Kafka__AlertsTopic" "value" "telemetry-alerts")
-    (dict "name" "Kafka__GroupId" "value" "web-api-dashboard-group")
-    (dict "name" "CORS__AllowedOrigins" "value" "*")
+  "diagnostics-worker" (dict "env" (list
+    (dict "name" "ConnectionStrings__DefaultConnection" "value" $.Values.dbConnection)
+    (dict "name" "Kafka__GroupId" "value" "diagnostics-group")
+    (dict "name" "Kafka__TopicName" "value" "telemetry-events")
+    (dict "name" "Gemini__ApiKey" "valueFrom" (dict "secretKeyRef" (dict "name" "api-secrets" "key" "gemini")))
   ))
-  "ingestion-api" (dict "port" 8080 "env" list)
-  "web-dashboard" (dict "port" 80 "env" (list
-    (dict "name" "VITE_API_URL" "value" "/api")
+  "sensor-emulator" (dict "env" (list
+    (dict "name" "Ingestion__ApiUrl" "value" "http://ingestion-api:8080")
   ))
 }}
 ---

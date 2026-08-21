@@ -16,13 +16,14 @@
     "[github-actions-workflow]": {
         "editor.defaultFormatter": "esbenp.prettier-vscode"
     },
-    "[dockerfile]": {
-        "editor.defaultFormatter": "docker.docker"
-    },
     "[terraform]": {
         "editor.defaultFormatter": "hashicorp.terraform"
     },
     "[terraform-vars]": {
         "editor.defaultFormatter": "hashicorp.terraform"
+    },
+    "makefile.configureOnOpen": false,
+    "[dockerfile]": {
+        "editor.defaultFormatter": "ms-azuretools.vscode-containers"
     }
 }

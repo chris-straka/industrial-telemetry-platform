@@ -37,8 +37,8 @@ public static class IngestTelemetryEndpoint
                     Value = JsonSerializer.Serialize(request),
                 };
 
-                // If Kafka is booting, this Task will complete
-                // once the producer's internal retry logic succeeds.
+                // If Kafka is booting, this Task will complete once the producer's internal retry logic succeeds.
+                // This is where we specify the Kafka topic
                 await kafkaProducer.ProduceAsync("telemetry-events", message);
 
                 return Results.Accepted();

@@ -29,12 +29,21 @@ public class TelemetryConsumerWorker(
             configuration["Kafka:TopicName"]
             ?? throw new Exception("Worker missing Kafka:TopicName");
 
+        // AutoOffsetReset is where the consumer starts reading from if the broker has no saved position/offset for that consumer's groupId
+        // It's relevant in four situations
+        // 1. Brand new GroupId -> 1) connecting for first time or 2) consumer changed their groupId
+        // 2. Consumer stopped for longer than Kafka's offset retention window (default 7 days)
+        // 3. Broker's offset points to data older than 7 days
+        // 4. Manual reset
+
+        // If the consumer crahes after saving to the DB but before it commits to the offset
+        // It will save to the DB twice
+
         var config = new ConsumerConfig
         {
             BootstrapServers = bootstrapServers,
             GroupId = groupId,
-            AutoOffsetReset = AutoOffsetReset.Earliest,
-            // Optimization for Local dev
+            AutoOffsetReset = AutoOffsetReset.Earliest, // read/offset from the beginning
             MetadataMaxAgeMs = 5000,
         };
 

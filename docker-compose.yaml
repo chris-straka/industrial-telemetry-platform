@@ -1,212 +1,214 @@
 # In .NET, Foo__Bar becomes Foo:Bar in code
 services:
-    web-dashboard:
-        image: node:24-alpine
-        working_dir: /app
-        # Mount your local source code so Vite sees changes
-        volumes:
-            - ./src/Industrial.Web.Dashboard:/app
-            - /app/node_modules
-        # Run the dev server and bind to all interfaces so Docker can expose it
-        command: sh -c "npm install && npm run dev -- --host"
-        ports:
-            - "5173:5173"
-        environment:
-            # This works for the dev server, but remember:
-            # Vite bakes env vars at BUILD time for production
-            - VITE_API_URL=http://localhost:5090
+  web-dashboard:
+    image: node:24-alpine
+    working_dir: /app
+    # Mount your local source code so Vite sees changes
+    volumes:
+      - ./src/Industrial.Web.Dashboard:/app
+      - /app/node_modules
+    # Run the dev server and bind to all interfaces so Docker can expose it
+    command: sh -c "npm install && npm run dev -- --host"
+    ports:
+      - "5173:5173"
+    environment:
+      # This works for the dev server, but remember:
+      # Vite bakes env vars at BUILD time for production
+      - VITE_API_URL=http://localhost:5090
 
-    web-api:
-        image: web-api
-        build:
-            context: .
-            dockerfile: src/Industrial.Web.Api/Dockerfile
-        ports:
-            - "5090:8080"
-        environment:
-            - ASPNETCORE_ENVIRONMENT=Development
-            - Kafka__BootstrapServers=kafka:9092
-            - Kafka__GroupId=web-api-dashboard-group
-            - Kafka__EventsTopic=telemetry-events
-            - Kafka__AlertsTopic=telemetry-alerts
-            - OTel__ServiceName=Industrial.Web.Api
-            - OTel__Endpoint=http://otel-collector:4317
-            - CORS__AllowedOrigins=http://localhost:3001,http://localhost:5173
-        depends_on:
-            kafka:
-                condition: service_healthy
+  web-api:
+    image: web-api
+    build:
+      context: .
+      dockerfile: src/Industrial.Web.Api/Dockerfile
+    ports:
+      - "5090:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - Kafka__BootstrapServers=kafka:9092
+      - Kafka__GroupId=web-api-dashboard-group
+      - Kafka__EventsTopic=telemetry-events
+      - Kafka__AlertsTopic=telemetry-alerts
+      - OTel__ServiceName=Industrial.Web.Api
+      - OTel__Endpoint=http://otel-collector:4317
+      - CORS__AllowedOrigins=http://localhost:3001,http://localhost:5173
+    depends_on:
+      kafka:
+        condition: service_healthy
 
-    ingestion-api:
-        image: ingestion-api
-        build:
-            context: .
-            dockerfile: src/Industrial.Ingestion.Api/Dockerfile
-        ports:
-            - "5089:8080"
-        environment:
-            - ASPNETCORE_ENVIRONMENT=Development
-            - Kafka__BootstrapServers=kafka:9092
-            - OTel__ServiceName=Industrial.Ingestion.Api
-            - OTel__Endpoint=http://otel-collector:4317
-        depends_on:
-            kafka:
-                condition: service_healthy
+  ingestion-api:
+    image: ingestion-api
+    build:
+      context: .
+      dockerfile: src/Industrial.Ingestion.Api/Dockerfile
+    ports:
+      - "5089:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - Kafka__BootstrapServers=kafka:9092
+      - OTel__ServiceName=Industrial.Ingestion.Api
+      - OTel__Endpoint=http://otel-collector:4317
+    depends_on:
+      kafka:
+        condition: service_healthy
 
-    diagnostics-worker:
-        image: diagnostics-worker
-        build:
-            context: .
-            dockerfile: src/Industrial.Diagnostics.Worker/Dockerfile
-        environment:
-            - ASPNETCORE_ENVIRONMENT=Development
-            - DB__ConnectionString=Host=postgres;Database=industrial_db;Username=admin;Password=password
-            - Gemini__ApiKey=${GEMINI_API_KEY}
-            - Kafka__BootstrapServers=kafka:9092
-            - Kafka__GroupId=diagnostics-group
-            - Kafka__TopicName=telemetry-events
-            - OTel__ServiceName=Industrial.Diagnostics.Worker
-            - OTel__Endpoint=http://otel-collector:4317
-        depends_on:
-            postgres:
-                condition: service_healthy
-            kafka:
-                condition: service_healthy
+  diagnostics-worker:
+    image: diagnostics-worker
+    build:
+      context: .
+      dockerfile: src/Industrial.Diagnostics.Worker/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__IndustrialDb=Host=postgres;Database=industrial_db;Username=admin;Password=password
+      - Gemini__ApiKey=${GEMINI_API_KEY}
+      - Kafka__BootstrapServers=kafka:9092
+      - Kafka__GroupId=diagnostics-group
+      - Kafka__TopicName=telemetry-events
+      - OTel__ServiceName=Industrial.Diagnostics.Worker
+      - OTel__Endpoint=http://otel-collector:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
 
-    sensor-emulator:
-        image: sensor-emulator
-        build:
-            context: .
-            dockerfile: src/Industrial.Sensor.Emulator/Dockerfile
-        environment:
-            - ASPNETCORE_ENVIRONMENT=Development
-            - Ingestion__ApiUrl=http://ingestion-api:8080
-        depends_on:
-            ingestion-api:
-                condition: service_started
+  sensor-emulator:
+    image: sensor-emulator
+    build:
+      context: .
+      dockerfile: src/Industrial.Sensor.Emulator/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - Ingestion__ApiUrl=http://ingestion-api:8080
+      - OTel__ServiceName=Industrial.Sensor.Emulator
+      - OTel__Endpoint=http://otel-collector:4317
+    depends_on:
+      ingestion-api:
+        condition: service_started
 
-    postgres:
-        image: postgres:18
-        volumes:
-            # Correct mount for Postgres 18+ to allow versioned subdirs
-            - postgres_data:/var/lib/postgresql
-        environment:
-            POSTGRES_USER: admin
-            POSTGRES_PASSWORD: password
-            POSTGRES_DB: industrial_db
-        ports:
-            - "5432:5432"
-        # Make sure this is running before C# attempts a migration
-        healthcheck:
-            test: ["CMD-SHELL", "pg_isready -U admin -d industrial_db"]
-            interval: 5s
-            timeout: 5s
-            retries: 5
+  postgres:
+    image: postgres:18
+    volumes:
+      # Correct mount for Postgres 18+ to allow versioned subdirs
+      - postgres_data:/var/lib/postgresql
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: industrial_db
+    ports:
+      - "5432:5432"
+    # Make sure this is running before C# attempts a migration
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d industrial_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-    pgadmin:
-        image: dpage/pgadmin4
-        ports:
-            - "5050:80"
-        environment:
-            - PGADMIN_DEFAULT_EMAIL=admin@admin.com
-            - PGADMIN_DEFAULT_PASSWORD=admin
-        volumes:
-            - ./pgadmin/pgadmin-servers.json:/pgadmin4/servers.json
-        depends_on:
-            postgres:
-                condition: service_healthy
+  pgadmin:
+    image: dpage/pgadmin4
+    ports:
+      - "5050:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@admin.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    volumes:
+      - ./pgadmin/pgadmin-servers.json:/pgadmin4/servers.json
+    depends_on:
+      postgres:
+        condition: service_healthy
 
-    kafka:
-        image: public.ecr.aws/bitnami/kafka:4.2.0
-        # platform: linux/amd64 removed to fix M4 heat (use native arm64)
-        environment:
-            # Unique ID for this Kafka server
-            - KAFKA_CFG_NODE_ID=0
-            # Manage the cluster (controller) and store the data (broker)
-            - KAFKA_CFG_PROCESS_ROLES=controller,broker
-            - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
-            # INTERNAL (for apps), EXTERNAL (for my Mac), CONTROLLER for Kafka management
-            # 0.0.0.0 means "listen on all network interfaces"
-            - KAFKA_CFG_LISTENERS=INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
-            # Tell my apps what host/port to use when talking to Kafka (prevents localhost loop inside Docker)
-            - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://localhost:9094
-            # PLAINTEXT security protocol for everything
-            - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
-            # Tell Kafka to use the 'INTERNAL' listener for internal broker traffic
-            - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
-            # Add a fixed Cluster ID so it doesn't try to re-format on restart.
-            - KAFKA_KRAFT_CLUSTER_ID=industrial-platform-cluster
-            - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
-            - BITNAMI_DEBUG=true
-        ports:
-            - "9092:9092"
-            - "9094:9094" # Map external port (for Kafka UI tools on Mac)
-        healthcheck:
-            test:
-                [
-                    "CMD-SHELL",
-                    "kafka-topics.sh --bootstrap-server localhost:9092 --list",
-                ]
-            interval: 10s
-            timeout: 10s
-            retries: 10
+  kafka:
+    image: public.ecr.aws/bitnami/kafka:4.2.0
+    # platform: linux/amd64 removed to fix M4 heat (use native arm64)
+    environment:
+      # Unique ID for this Kafka server
+      - KAFKA_CFG_NODE_ID=0
+      # Manage the cluster (controller) and store the data (broker)
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      # INTERNAL (for apps), EXTERNAL (for my Mac), CONTROLLER for Kafka management
+      # 0.0.0.0 means "listen on all network interfaces"
+      - KAFKA_CFG_LISTENERS=INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
+      # Tell my apps what host/port to use when talking to Kafka (prevents localhost loop inside Docker)
+      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      # PLAINTEXT security protocol for everything
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      # Tell Kafka to use the 'INTERNAL' listener for internal broker traffic
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
+      # Add a fixed Cluster ID so it doesn't try to re-format on restart.
+      - KAFKA_KRAFT_CLUSTER_ID=industrial-platform-cluster
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - BITNAMI_DEBUG=true
+    ports:
+      - "9092:9092"
+      - "9094:9094" # Map external port (for Kafka UI tools on Mac)
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "kafka-topics.sh --bootstrap-server localhost:9092 --list",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
 
-    kafka-ui:
-        image: provectuslabs/kafka-ui:latest
-        ports:
-            - "8080:8080"
-        environment:
-            - KAFKA_CLUSTERS_0_NAME=local
-            - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
-        depends_on:
-            kafka:
-                condition: service_healthy
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
 
-    # The collector receives telemetry from the API and worker and aggregates it
-    # It then sends the data to backends like prometheus and jaegar (decouples code from monitoring tools)
-    otel-collector:
-        # "Contrib" version includes the extra plugins needed to talk to Prometheus and Kafka
-        image: otel/opentelemetry-collector-contrib
-        volumes:
-            - ./monitoring/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
-        command: ["--config=/etc/otelcol-contrib/config.yaml"]
-        ports:
-            - "4317:4317" # OTLP gRPC
-            - "4318:4318" # OTLP HTTP
-            - "8889:8889" # Prometheus exporter port
+  # The collector receives telemetry from the API and worker and aggregates it
+  # It then sends the data to backends like prometheus and jaegar (decouples code from monitoring tools)
+  otel-collector:
+    # "Contrib" version includes the extra plugins needed to talk to Prometheus and Kafka
+    image: otel/opentelemetry-collector-contrib
+    volumes:
+      - ./monitoring/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "8889:8889" # Prometheus exporter port
 
-    loki:
-        image: grafana/loki:main-8703b0c
-        ports:
-            - "3100:3100"
-        volumes:
-            - ./monitoring/loki-config.yaml:/etc/loki/local-config.yaml
-        command: -config.file=/etc/loki/local-config.yaml
+  loki:
+    image: grafana/loki:main-8703b0c
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki-config.yaml:/etc/loki/local-config.yaml
+    command: -config.file=/etc/loki/local-config.yaml
 
-    prometheus:
-        image: prom/prometheus
-        volumes:
-            - ./monitoring/prometheus.yaml:/etc/prometheus/prometheus.yml
-        ports:
-            - "9090:9090"
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./monitoring/prometheus.yaml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
 
-    tempo:
-        image: grafana/tempo:latest
-        ports:
-            - "3200:3200"
-            # 4317 host port removed to avoid conflict with OTel Collector
-        volumes:
-            - ./monitoring/tempo.yaml:/etc/tempo.yaml
-        command: ["-config.file=/etc/tempo.yaml"]
+  tempo:
+    image: grafana/tempo:latest
+    ports:
+      - "3200:3200"
+      # 4317 host port removed to avoid conflict with OTel Collector
+    volumes:
+      - ./monitoring/tempo.yaml:/etc/tempo.yaml
+    command: ["-config.file=/etc/tempo.yaml"]
 
-    grafana:
-        image: grafana/grafana
-        ports:
-            - "3000:3000"
-        volumes:
-            - ./monitoring/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
-        environment:
-            - GF_AUTH_ANONYMOUS_ENABLED=true
-            - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
 
 volumes:
-    postgres_data:
+  postgres_data:
