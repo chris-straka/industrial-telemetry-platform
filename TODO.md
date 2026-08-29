@@ -1,81 +1,256 @@
-# The "Dual Write" Problem:
+# Status
 
-Current: Your API validates data and sends to Kafka.
-Risk: What if Kafka is down? Your API returns 202 Accepted, but the data is gone forever.
+Reviewed after the edge-gateway transition. Items marked DONE are implemented; the rest
+are still open, roughly in the order I'd tackle them.
 
-Professional Fix: Outbox Pattern. Save the telemetry to a local "Outbox" table in the same transaction as the API call, then a separate process pushes to Kafka.
+---
 
-# Idempotency & Retries:
+# TODO: No automated tests at all
 
-Current: The worker saves to Postgres.
-Risk: If the worker crashes after saving to the DB but before telling Kafka "I'm done" (committing the offset), it will process the same message again on reboot.
+Current: verified by hand with the emulator and `make verify`.
+Risk: the biggest single gap in this repo right now. Every durability claim is asserted,
+not proven, and a reviewer looking for engineering rigour checks for tests first.
 
-Professional Fix: Check if the EquipmentId + Timestamp already exists before inserting.
+Fix: Testcontainers. Spin up real Kafka and Postgres in CI and assert the invariant
+directly — produce N readings, kill the ingestion API mid-run, restart it, assert
+`ingested == produced` and `duplicates == 0`. That test IS the demo, automated.
+Cheap unit tests worth having alongside it: the uploader's partial-ACK delete
+(accepted=150 of 200 deletes exactly the first 150) and the receiver's duplicate path.
 
-# Schema Evolution:
+# TODO: The emulator's new metrics have never been observed
 
-Current: You are passing raw JSON strings.
-Risk: If you add a FuelLevel field to the API but forget to update the Worker, the Worker might crash or lose data.
-Professional Fix: Use Protobuf or Avro with a Schema Registry.
+Current: `SensorMetrics` exists and `.WithMetrics(...)` is wired into the emulator's OTel
+block. Counters fire from `AcquisitionWorker` (`acquired`, `dropped`) and
+`TransmissionWorker` (`sent`, `rejected`, `failed`), plus an observable gauge reading
+`channel.Reader.Count`. All of it is verified by COMPILATION ONLY -- nothing has run
+against a live collector.
 
-# Observability (The "TODO" on line 26):
+Risk: an instrument that is never scraped is indistinguishable from one that does not
+exist. `sensor.telemetry.dropped` in particular is the only place sensor-side loss is ever
+visible -- a reading dropped at the channel gets no row anywhere, so `make verify` counts
+it as a sequence gap with nothing to attribute it to.
 
-Current: You have the OTel SDK, but no manual spans.
-Professional Fix: Link the Trace ID from the API to the Worker so you can see a single Gantt chart of a telemetry packet's entire journey across the network.
+Fix: `make upd`, let it run, and confirm all five counters and the gauge appear in
+Prometheus (dotted in code, underscored in PromQL: `sensor_telemetry_dropped`). Then check
+the gauge actually moves -- kill the gateway and `sensor.channel.depth` should climb from
+~0 toward `BufferCapacity` (10_000) before any drop is recorded. If depth never rises, the
+gauge callback is wrong; if it pins at 10_000 with no drops, the counter is not wired.
 
-# Docker Compose
+# TODO: No latency histogram anywhere
 
-Issue: Kafka connectivity from host. Since your apps run via dotnet run (host) but Kafka is in Docker, you must define advertised listeners so Kafka tells the client to communicate via localhost.
-Fix: Update your kafka service environment:
-code
-Yaml
+Current: every send-path instrument is a Counter, so the metrics say how many sends
+happened and never how slow the worst ones were. The emulator's POST to the gateway and
+the gateway's gRPC upload are both invisible on that axis.
 
-- KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
+Fix: a `Histogram<double>` on each hop, recorded around the call. That also makes the
+outage demo sharper -- the queue-depth gauge shows the backlog, but nothing currently
+shows the latency spike that precedes it.
 
-# Industrial.Diagnostics.Worker
+# TODO: No CI that builds C#
 
-Issue 1: Poison Pill Messages. If JsonSerializer.Deserialize fails or a DB constraint is hit, the worker will crash and stop consuming.
-Fix: Wrap the loop content in a try-catch block to log errors and Continue rather than allowing the exception to bubble up to ExecuteAsync.
+Current: `.github/workflows/` only has terraform-plan and terraform-apply.
+Risk: nothing catches a broken build except me running it.
 
-Issue 2: Hardcoded Connection String. The AppDbContext connection string is hardcoded in Program.cs.
-Fix: Move it to appsettings.json and use builder.Configuration.GetConnectionString("DefaultConnection").
+Fix: a `dotnet build` + `dotnet test` workflow on push. Add `buf lint` and
+`buf breaking --against` for the proto while there — a renumbered field is a wire-compat
+break that no compiler catches.
 
-Issue 3: Kafka Consumer Closing. The using var consumer is inside ExecuteAsync.
-While okay, it's safer to call consumer.Close() in a finally block to ensure offsets are committed properly during a graceful shutdown.
+# TODO: The "Dual Write" Problem
 
-# Industrial.Ingestion.Api
+Current: the ingestion API validates data and produces to Kafka.
+Risk: if Kafka is down, `ProduceAsync` throws and the reading is gone. The gateway still
+holds it (it only deletes on ACK), so this is less severe than it was — but the failure
+is still at the wrong layer.
 
-Issue: Producer Lifecycle. You're using ProduceAsync. This is safe, but for high-throughput AgTech telemetry, producer.Produce (non-async) with a delivery handler is more performant.
-For your current scale, ProduceAsync is fine, but ensure you call producer.Flush if you implement a custom shutdown to ensure messages in the buffer are sent.
+Fix: Outbox Pattern. Write the telemetry to a local Outbox table in the same transaction,
+then a separate process pushes to Kafka. Note this is the same store-and-forward shape as
+the edge gateway, one layer up — worth saying out loud, because recognising a pattern
+recurring at a different scale is the point.
 
-# Protocol Buffers
+# TODO: Dead letter for unsendable edge readings
 
-Were a good idea in a couple places I think
+Current: `UploaderWorker` drops a reading it cannot serialize, logs it at Error, and
+counts `edge.telemetry.poisoned`. Dropping is what stops one bad row blocking the queue
+forever, since it always sits in the oldest batch.
+Risk: dropped means gone. Same auditability gap as the Kafka side below.
 
-# The Dead Letter Queue (DLQ):
+Fix: a local `quarantine` table in the same SQLite file, written in the same transaction
+as the delete, holding the row plus the exception.
 
-Problem: Currently, if a "Poison Pill" (corrupted message) hits your worker, you just log and continue.
-Fix: Route those failed messages to a telemetry-errors Kafka topic. This is a critical pattern in Fintech/Industrial systems for auditability.
+# TODO: Dead Letter Queue
 
-# Integration Testing with Testcontainers:
+Current: a poison pill is logged and skipped (`TelemetryConsumerWorker`).
+Risk: skipped means gone. No audit trail of what was dropped or why.
 
-Problem: You are testing manually via the emulator.
-Fix: Use the Testcontainers NuGet package to spin up real, temporary Kafka and Postgres instances during your CI/CD build to run automated integration tests.
+Fix: route failures to a `telemetry-errors` topic with the original payload plus the
+exception. Critical for auditability in fintech and industrial systems alike.
 
-# ML.NET Integration (The "Brain"):
+# TODO: Trace context across Kafka
 
-Problem: isAnomaly is currently a hardcoded if statement.
-Fix: Replace the if logic with an ML.NET Prediction Engine using a pre-trained .zip model to detect multivariate anomalies.
+Current: OTel auto-instrumentation covers HTTP and gRPC, and W3C `traceparent`
+propagates over the gRPC hop, so gateway -> cloud stitches into one trace.
+Risk: Kafka does NOT propagate trace context automatically. The trace dies at the
+producer and a new one starts at the consumer, so there is no single Gantt chart of a
+reading's whole journey.
 
-# Real-time Dashboard
+Fix: inject `traceparent` into Kafka message headers on produce, extract and restore it
+on consume. That closes the last gap and makes an outage visible as one ten-minute-wide
+trace.
 
-Create a Blazor or React frontend that uses SignalR to stream the telemetry-alerts Kafka topic directly to a browser.
-This is the "Visual Hook" recruiters love.
+# DONE: Trace context across the SQLite buffer
 
-# https://aspire.dev/
+Was: nothing on `TelemetryRecord` remembered the sensor's trace, so the trace died at
+the 202 and the uploader started a fresh one. The gateway -> cloud hop stitched; the
+sensor -> gateway -> cloud journey did not.
 
-# Auth
+`TelemetryRecord.TraceParent` is captured at receive and attached to the `edge.upload`
+span as a span LINK rather than restored as the parent. Parent-child means "this ran because
+that called it and is waiting". After buffering, neither holds: the sensor's request
+finished ten minutes ago, and the upload fires because the uploader loop found rows, not
+because any one reading asked for it. A batch is a fan-in of up to 200 unrelated traces
+into one gRPC call, and a link is the relation that says "related to" without claiming
+"caused by".
 
-M2M "Machine-to-Machine" Authentication with keycloak.
-The Emulator needs a "Client Secret" to talk to the Ingestion.Api.
-This proves you can secure service-to-service communication, not just user logins.
+Rejected: a `traceparent` field per reading in the proto, keeping each reading in its own
+trace end to end. It draws the better demo -- one continuous ten-minute bar per reading
+-- but costs a proto change, 200 spans per post-outage batch, and it asserts a causal
+chain that is not there.
+
+# TODO: Schema Evolution (partially done)
+
+DONE for the gateway -> cloud hop: `telemetry.proto` is a shared schema both sides
+generate from, so a renamed field is a compile error.
+
+Current: the Kafka message value is still a JSON string.
+Risk: `System.Text.Json` silently leaves unmatched properties at their defaults. This
+already bit me — the API wrote `MessageId`, the worker's DTO didn't have the field, and it
+was null forever. No exception, no log.
+
+Fix, in order of cost:
+1. `Industrial.Contracts` project holding the envelope record, referenced by the API, the
+   worker and the web API. A rename becomes a compile error. Cheap, most of the benefit.
+2. Protobuf/Avro + Schema Registry. Worth it when there are producers I don't own.
+
+# TODO: Auth
+
+Current: nothing. Every hop is unauthenticated plaintext.
+Fix: M2M authentication with Keycloak — the gateway needs a client secret to talk to the
+ingestion API. Proves service-to-service security, not just user login.
+
+For the edge hop specifically the realistic answer is mTLS with a per-device client
+certificate, because that is how you revoke a single compromised gateway in the field
+without rotating a shared secret across the fleet.
+
+# TODO: Diagnostics.Worker is a .Web project that serves nothing
+
+Current: it uses `WebApplication.CreateBuilder` and maps no endpoints, so it pays for the
+ASP.NET Core shared framework and gets nothing back.
+Risk: mild, but it also means k8s has no liveness/readiness probe to hit, and there is a
+Helm chart in `chart/` that would want one.
+
+Fix: keep `.Web` and add `/health` (plus `/health/ready` gated on the Kafka consumer
+actually being assigned partitions). That makes the SDK choice honest AND gives Istio
+something to route on. The alternative — switching it to `.Worker` — is worse here,
+precisely because the probe is genuinely wanted.
+
+# TODO: The Helm chart predates the edge gateway
+
+Current: `chart/templates/custom-apps.yaml` is a generation behind the store-and-forward
+refactor and would not `helm template` cleanly if it were run.
+
+- There is no `edge-gateway` Deployment and no `edge-gateway` image in `values.yaml`, so
+  the one piece the whole durability story rests on does not exist in the k8s path at all.
+- The first `range` block is supposed to be the services-with-ports; it actually lists
+  `diagnostics-worker` and `sensor-emulator` (both workers), while `web-api`,
+  `ingestion-api` and `web-dashboard` are missing entirely. Those two therefore render
+  TWICE — once with an empty `containerPort:`, because the dict has no `port` key.
+- `sensor-emulator` is handed `Ingestion__ApiUrl`, which nothing binds. It needs
+  `Gateway__Url` plus the `Emulator__*` block, and `ValidateOnStart` means a missing
+  value is a crash at boot, not a default.
+
+Risk: compose is the dev path and works; k8s is the intended prod path and is untested
+fiction. Worse in an interview than having no chart, because it looks finished.
+
+Fix, in order: add `edge-gateway` as a StatefulSet, not a Deployment — its SQLite buffer
+is the one piece of state that must survive rescheduling, and a Deployment would point
+every replica at the same PVC (`docs/Kubernetes.md` covers why that is corruption rather
+than replication). Then split the template's service and worker ranges properly, and give
+`sensor-emulator` the real config contract. If the emulator ever runs more than one pod
+there, `Emulator__ReplicaId` comes straight off the StatefulSet ordinal
+(`ORDINAL=${HOSTNAME##*-}`), which is what 0-based buys.
+
+# TODO: Rename Industrial.Data.ML
+
+It generates synthetic training data and trains `model.zip`. The name reads like a data
+access library. `Industrial.ML.Training` matches the `Industrial.<Area>.<Thing>`
+convention used everywhere else.
+
+# TODO: Aspire
+
+https://aspire.dev/ — would replace a chunk of the compose wiring. Evaluate whether it
+adds anything over what's already working, or just churn.
+
+---
+
+# DONE: Idempotency and retries
+
+`MessageId` is minted by the sensor and carried unchanged through every hop. Unique index
+in SQLite (absorbs a retried sensor POST) and in Postgres (absorbs a re-sent gateway batch
+or a Kafka redelivery). The worker dedupes before ML inference, because the time-series
+engine is stateful and a replayed duplicate would corrupt its window.
+
+# DONE: MessageId is a uuid, and ids are time-ordered
+
+`TelemetryReading.MessageId` is a `Guid` (Postgres `uuid`, 16 bytes) instead of a `string`
+(`text`, 37), on the index every message touches. `Id` and the sensor's minted `MessageId`
+are both `Guid.CreateVersion7()` -- time-ordered, so inserts land on the index's rightmost
+page instead of splitting pages at random. The wire stays a string (protobuf has no uuid
+scalar), so the consumer parses at the boundary with `Guid.TryParse`, which folds a
+malformed id into the same poison-pill path as a missing one.
+
+The gateway's SQLite `MessageId` is deliberately still a string: EF's SQLite provider
+stores `Guid` as TEXT anyway, so there is no size win, and that database is a transient
+buffer rather than the system of record.
+
+Migrations were squashed to a single `InitialCreate` at the same time. See
+`docs/DB/Postgres.md` for why that beat appending a migration -- EF's `AddColumn` leaves
+its backfill `defaultValue` on the column permanently, which would have made a forgotten
+`MessageId` silently become `Guid.Empty`.
+
+# DONE: Poison pill messages
+
+The consumer loop try/catches per message and continues. Messages with no `MessageId` are
+discarded explicitly, since a message that can't be deduplicated can't be accepted without
+breaking the guarantee. (Still needs the DLQ above so they're not silently lost.)
+
+# DONE: Hardcoded connection string
+
+Moved to `appsettings.json` via `GetConnectionString("IndustrialDb")`.
+
+# DONE: Kafka consumer closing
+
+`consumer.Close()` in a `finally`. Commits final offsets and leaves the group cleanly,
+instead of making the broker wait out `session.timeout.ms` before rebalancing on every
+deploy.
+
+# DONE: Producer lifecycle
+
+`ApplicationStopping` flushes and disposes the producer in both the API and the worker.
+
+# DONE: Kafka advertised listeners
+
+Separate INTERNAL (`kafka:9092`) and EXTERNAL (`localhost:9094`) listeners, so containers
+and host tools each get an address that resolves for them.
+
+# DONE: Protocol Buffers
+
+Used on the gateway -> cloud hop. See `src/Protos/telemetry.proto`.
+
+# DONE: ML.NET integration
+
+`ModelEngine` wraps a `TimeSeriesPredictionEngine` loaded from `model.zip`, replacing the
+hardcoded threshold.
+
+# DONE: Real-time dashboard
+
+React + Vite, fed by the web API over SignalR.

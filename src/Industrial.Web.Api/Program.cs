@@ -1,5 +1,8 @@
 using Confluent.Kafka;
+using Industrial.Shared;
+using Industrial.Web.Api.Configuration;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Options;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -7,39 +10,47 @@ using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var ServiceName =
-    builder.Configuration["OTel:ServiceName"]
-    ?? throw new InvalidOperationException("Missing 'OTel:ServiceName' configuration.");
-var OTelEndpoint =
-    builder.Configuration["OTel:Endpoint"]
-    ?? throw new InvalidOperationException("Missing 'OTel:Endpoint' configuration.");
-var BootstrapServers =
-    builder.Configuration["Kafka:BootstrapServers"]
-    ?? throw new InvalidOperationException("Missing 'Kafka:BootstrapServers' configuration.");
-var AllowedOrigins =
-    builder.Configuration["CORS:AllowedOrigins"]?.Split(',')
-    ?? throw new InvalidOperationException();
+builder
+    .Services.AddOptions<OTelOptions>()
+    .Bind(builder.Configuration.GetSection(OTelOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+builder
+    .Services.AddOptions<KafkaOptions>()
+    .Bind(builder.Configuration.GetSection(KafkaOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+builder
+    .Services.AddOptions<CorsOptions>()
+    .Bind(builder.Configuration.GetSection(CorsOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+// Needed during registration, before the container exists.
+var otel = builder.Configuration.GetSection(OTelOptions.Section).Get<OTelOptions>()!;
+var kafka = builder.Configuration.GetSection(KafkaOptions.Section).Get<KafkaOptions>()!;
+var cors = builder.Configuration.GetSection(CorsOptions.Section).Get<CorsOptions>()!;
 
 builder.Logging.AddOpenTelemetry(options =>
 {
     options
-        .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(ServiceName))
-        .AddOtlpExporter(opt => opt.Endpoint = new Uri(OTelEndpoint));
+        .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(otel.ServiceName))
+        .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint));
 });
 
 builder
     .Services.AddOpenTelemetry()
-    .ConfigureResource(resource => resource.AddService(ServiceName))
+    .ConfigureResource(resource => resource.AddService(otel.ServiceName))
     .WithMetrics(metrics =>
         metrics
             .AddAspNetCoreInstrumentation()
             .AddRuntimeInstrumentation()
-            .AddOtlpExporter(opt => opt.Endpoint = new Uri(OTelEndpoint))
+            .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     )
     .WithTracing(tracing =>
         tracing
             .AddAspNetCoreInstrumentation()
-            .AddOtlpExporter(opt => opt.Endpoint = new Uri(OTelEndpoint))
+            .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     );
 
 builder.Services.AddSignalR();
@@ -48,7 +59,7 @@ builder.Services.AddCors(options =>
     options.AddDefaultPolicy(policy =>
     {
         // CORS
-        policy.WithOrigins(AllowedOrigins).AllowAnyHeader().AllowAnyMethod().AllowCredentials(); // Required for SignalR
+        policy.WithOrigins(cors.Origins).AllowAnyHeader().AllowAnyMethod().AllowCredentials(); // Required for SignalR
     });
 });
 
@@ -71,36 +82,26 @@ public interface ITelemetryClient
 public class TelemetryHub : Hub<ITelemetryClient> { }
 
 public class KafkaSignalRWorker(
-    IConfiguration configuration,
+    IOptions<KafkaOptions> kafkaOptions,
     IHubContext<TelemetryHub, ITelemetryClient> hubContext,
     ILogger<KafkaSignalRWorker> logger
 ) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var BootstrapServers =
-            configuration["Kafka:BootstrapServers"]
-            ?? throw new Exception("Worker missing Kafka:BootstrapServers");
-        var GroupId =
-            configuration["Kafka:GroupId"] ?? throw new Exception("Worker missing Kafka:GroupId");
-        var EventsTopic =
-            configuration["Kafka:EventsTopic"]
-            ?? throw new Exception("Worker missing Kafka:EventsTopic");
-        var AlertsTopic =
-            configuration["Kafka:AlertsTopic"]
-            ?? throw new Exception("Worker missing Kafka:AlertsTopic");
+        var kafka = kafkaOptions.Value;
 
         var config = new ConsumerConfig
         {
-            BootstrapServers = BootstrapServers,
-            GroupId = GroupId,
+            BootstrapServers = kafka.BootstrapServers,
+            GroupId = kafka.GroupId,
             // Only real-time data for dashboard
             AutoOffsetReset = AutoOffsetReset.Latest,
             EnableAutoCommit = true,
         };
 
         using var consumer = new ConsumerBuilder<string, string>(config).Build();
-        consumer.Subscribe([EventsTopic, AlertsTopic]);
+        consumer.Subscribe([kafka.EventsTopic, kafka.AlertsTopic]);
 
         logger.LogInformation("SignalR-Kafka Bridge Started. Listening for events...");
 
@@ -113,11 +114,11 @@ public class KafkaSignalRWorker(
                     continue;
 
                 // Use the Topic name to decide which method to call
-                if (result.Topic == EventsTopic)
+                if (result.Topic == kafka.EventsTopic)
                 {
                     await hubContext.Clients.All.telemetry_events(result.Message.Value);
                 }
-                else if (result.Topic == AlertsTopic)
+                else if (result.Topic == kafka.AlertsTopic)
                 {
                     await hubContext.Clients.All.telemetry_alerts(result.Message.Value);
                 }

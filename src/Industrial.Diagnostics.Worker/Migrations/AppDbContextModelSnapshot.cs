@@ -38,15 +38,32 @@ namespace Industrial.Diagnostics.Worker.Migrations
                     b.Property<bool>("IsAnomaly")
                         .HasColumnType("boolean");
 
+                    b.Property<Guid>("MessageId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<double>("OilPressure")
                         .HasColumnType("double precision");
 
-                    b.Property<DateTime>("Timestamp")
+                    b.Property<DateTimeOffset>("PersistedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("SequenceNumber")
+                        .HasColumnType("bigint");
 
                     b.HasKey("Id");
 
-                    b.ToTable("TelemetryReadings", (string)null);
+                    b.HasIndex("MessageId")
+                        .IsUnique();
+
+                    b.HasIndex("EquipmentId", "OccurredAt");
+
+                    b.ToTable("TelemetryReadings");
                 });
 #pragma warning restore 612, 618
         }

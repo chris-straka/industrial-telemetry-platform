@@ -1,5 +1,8 @@
 using Confluent.Kafka;
 using FluentValidation;
+using Industrial.Shared;
+using Microsoft.Extensions.Options;
+using Industrial.Ingestion.Api.Configuration;
 using Industrial.Ingestion.Api.Features.Ingestion;
 using Microsoft.Extensions.Diagnostics.Metrics;
 using OpenTelemetry.Logs;
@@ -9,44 +12,43 @@ using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Builder.Configuration pulls from a layered hierarchy (LOWEST to HIGHEST)
-// 1. appsettings.json
-// 2. appsettings.ENV.json
-// 3. User secrets (local dev only)
-// 4. ENV variables
-// 5. CLI args
-// In Linux/Bash, env vars can't contain `:`
-// .NET will convert __ from linux/bash/docker into : so it works in appsettings.json
-// Kafka__BootstrapServers -> Kafka:BootstrapServers
-var ServiceName =
-    builder.Configuration["OTel:ServiceName"]
-    ?? throw new InvalidOperationException("Missing 'OTel:ServiceName' configuration.");
-var otelEndpoint =
-    builder.Configuration["OTel:Endpoint"]
-    ?? throw new InvalidOperationException("Missing 'OTel:Endpoint' configuration.");
-var bootstrapServers =
-    builder.Configuration["Kafka:BootstrapServers"]
-    ?? throw new InvalidOperationException("Missing 'Kafka:BootstrapServers' configuration.");
+// Configuration layers lowest to highest: appsettings.json, appsettings.ENV.json, user
+// secrets, environment variables, CLI args. Env vars cannot contain a colon, so .NET
+// rewrites Kafka__BootstrapServers to Kafka:BootstrapServers at load time -- which is
+// why every key in this repo is READ with a colon.
+builder
+    .Services.AddOptions<OTelOptions>()
+    .Bind(builder.Configuration.GetSection(OTelOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+builder
+    .Services.AddOptions<KafkaOptions>()
+    .Bind(builder.Configuration.GetSection(KafkaOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
 
-// Deps are registered with builder.Services (~ApplicationContext)
-// A service is a dep (~Bean injected where needed by the Builder.Services container)
-// .NET registers deps upfront instead of in @Configuration, @Service or @Component classes
+// Needed during registration, before the container exists.
+var otel = builder.Configuration.GetSection(OTelOptions.Section).Get<OTelOptions>()!;
+var kafka = builder.Configuration.GetSection(KafkaOptions.Section).Get<KafkaOptions>()!;
+
+// .NET registers every dependency up front against builder.Services, rather than
+// discovering them from annotations on the classes themselves.
 builder
     .Services.AddOpenTelemetry()
-    .ConfigureResource(resource => resource.AddService(ServiceName)) // resouce => tel metadata
-    .WithLogging(logging => logging.AddOtlpExporter(opt => opt.Endpoint = new Uri(otelEndpoint)))
+    .ConfigureResource(resource => resource.AddService(otel.ServiceName)) // resouce => tel metadata
+    .WithLogging(logging => logging.AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint)))
     .WithMetrics(metrics =>
         metrics
             .AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation()
             .AddRuntimeInstrumentation()
-            .AddOtlpExporter(opt => opt.Endpoint = new Uri(otelEndpoint))
+            .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     )
     .WithTracing(tracing =>
         tracing
             .AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation()
-            .AddOtlpExporter(opt => opt.Endpoint = new Uri(otelEndpoint))
+            .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     );
 
 builder.Services.AddValidatorsFromAssemblyContaining<TelemetryValidator>();
@@ -57,11 +59,11 @@ builder.Services.AddSingleton(sp => // service provider
     // Get the .NET logger for the Kafka producer<Key, Value> (loggers can only write, not read)
     var logger = sp.GetRequiredService<ILogger<IProducer<string, string>>>();
 
-    // TODO: There are more ProducerConfig properties for production
-    // By default, it will serialize the key and value for you if left string, string
+    // TODO: production needs more of ProducerConfig (acks, idempotence, linger).
+    // string/string keys and values get the built-in serializers for free.
     var config = new ProducerConfig
     {
-        BootstrapServers = bootstrapServers,
+        BootstrapServers = kafka.BootstrapServers,
         AllowAutoCreateTopics = true,
         MetadataMaxAgeMs = 5000, // Force refresh every 5s for fast startup
     };
@@ -71,6 +73,10 @@ builder.Services.AddSingleton(sp => // service provider
         .SetErrorHandler((_, e) => logger.LogError("Kafka Producer Error: {Reason}", e.Reason))
         .Build();
 });
+
+// Inheriting TelemetryIngestionBase is not enough on its own: without AddGrpc plus the
+// MapGrpcService below, a gateway connects and gets UNIMPLEMENTED.
+builder.Services.AddGrpc();
 
 builder.Services.AddOpenApi();
 
@@ -88,7 +94,12 @@ app.Lifetime.ApplicationStopping.Register(() =>
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 
-// Register the POST /api/telemetry route
+// Register the POST /api/telemetry route (legacy/manual-test path)
 app.MapIngestionEndpoints();
+
+// Register the gRPC StreamTelemetry service (the durable path, used by the Edge Gateway).
+// Bound to the Http2 Kestrel endpoint configured in appsettings.json -- see the note
+// there about why plaintext gRPC needs its own port.
+app.MapGrpcService<TelemetryService>();
 
 app.Run();

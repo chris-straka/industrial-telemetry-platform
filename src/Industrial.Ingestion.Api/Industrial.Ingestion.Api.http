@@ -1,10 +1,25 @@
 @ApiHostAddr = http://localhost:5089
 
+### Manual test door. NOT the production path -- sensors go through the edge gateway
+### and arrive over gRPC on port 5091. See Features/Ingestion/IngestTelemetryEndpoint.cs.
+###
+### Omit MessageId and the server generates one, which means re-sending this request
+### creates a SECOND reading. Supply your own and re-sending is a no-op, because the
+### worker dedupes on it.
+###
+### Use a MANUAL- equipment id. This path sends SequenceNumber 0, and scripts/verify.sql
+### proves no data was lost by checking max_seq = COUNT(*) per device -- a seq-less row
+### on a real EQ- id breaks that arithmetic, so verify.sql skips MANUAL-%.
 POST {{ApiHostAddr}}/api/telemetry
 Content-Type: application/json
 
 {
-  "equipmentId": "EQ-123",
-  "engineTemperature": 95.5,
-  "oilPressure": 40.2
+  "messageId": "11111111-1111-1111-1111-111111111111",
+  "equipmentId": "MANUAL-1",
+  "occurredAt": "2026-08-21T12:00:00Z",
+  "engineTemperature": 245.0,
+  "oilPressure": 42.5
 }
+
+### Send this one twice. Both return 202; only one row lands in Postgres.
+### That is idempotency, demonstrated in two clicks.

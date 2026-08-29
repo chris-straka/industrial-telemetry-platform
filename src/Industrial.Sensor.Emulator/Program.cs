@@ -1,140 +1,308 @@
-﻿// ImplicitUsings is hiding some of these packages
+// ImplicitUsings is hiding some packages
 using System.Net.Http.Json;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
+using System.Threading.Channels;
+using Industrial.Sensor.Emulator.Configuration;
+using Industrial.Sensor.Emulator.Infrastructure;
+using Industrial.Shared;
+using Microsoft.Extensions.Options;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
-// Microsoft.Extensions.Hosting turns the console app into a "Generic Host"
-// This gives it DI (builder.Services), Configuration (appsettings.json), Logging, Otel.
+// Pretends to be physical equipment, only talks to Edge Gateway (doesn't know cloud exists)
+
+// Microsoft.Extensions.Hosting turns the console app into a Generic Host
+// This brings in DI (builder.Services), Configuration (appsettings.json), Logging
 var builder = Host.CreateApplicationBuilder(args);
 
-var serviceName =
-    builder.Configuration["OTel:ServiceName"]
-    ?? throw new InvalidOperationException("Missing 'OTel:ServiceName' configuration.");
-var otelEndpoint =
-    builder.Configuration["OTel:Endpoint"]
-    ?? throw new InvalidOperationException("Missing 'OTel:Endpoint' configuration.");
-var ingestionApiUrl =
-    builder.Configuration["Ingestion__ApiUrl"]
-    ?? throw new InvalidOperationException("Missing 'Ingestion__ApiUrl'");
+// Options will grab a chunk from IConfiguration and create types + validate it.
+// Linux env vars can't contain ':' but builder.Configuration will foo__bar -> foo:bar
+// .Bind() uses reflection to get class members at runtime
+// Binding "produces a T from a key-value config"
+builder
+    .Services.AddOptions<OTelOptions>()
+    .Bind(builder.Configuration.GetSection(OTelOptions.Section))
+    .ValidateDataAnnotations() // validate on use
+    .ValidateOnStart(); // validate at start of runtime
+builder
+    .Services.AddOptions<GatewayOptions>()
+    .Bind(builder.Configuration.GetSection(GatewayOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+builder
+    .Services.AddOptions<EmulatorOptions>()
+    .Bind(builder.Configuration.GetSection(EmulatorOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+// DI is only available after builder.Build() and my Options above only run/validate after that
+// To use them earlier (like to register services like Otel) I need this
+var otel = builder.Configuration.GetSection(OTelOptions.Section).Get<OTelOptions>()!;
+var emulator = builder.Configuration.GetSection(EmulatorOptions.Section).Get<EmulatorOptions>()!;
 
 // Otel
+// builder.Services is the IServiceCollection not the IServiceProvider (DI container)
 builder
     .Services.AddOpenTelemetry()
-    .ConfigureResource(r => r.AddService(serviceName))
-    .WithLogging(log => log.AddOtlpExporter(opt => opt.Endpoint = new Uri(otelEndpoint)))
+    .ConfigureResource(r => r.AddService(otel.ServiceName))
+    .WithLogging(log => log.AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint)))
+    .WithMetrics(m =>
+        m.AddMeter(SensorMetrics.MeterName)
+            // Tracks outgoing HTTP metrics (the POST -> edge gateway)
+            // This will tell us if the edge gateway is slow
+            .AddHttpClientInstrumentation()
+            // If the transmission loop can't get scheduled, it stops draining and drops readings
+            // This will emit thread-pool queue length, thread count, GC pause stats
+            // This will tell us if the runtime is slow
+            .AddRuntimeInstrumentation()
+            // This is where we send our otel data every 60s
+            .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
+    )
     .WithTracing(trace =>
         trace
-            .AddHttpClientInstrumentation() // Automatically traces HTTP calls to the API!
-            .AddOtlpExporter(opt => opt.Endpoint = new Uri(otelEndpoint))
+            .AddHttpClientInstrumentation()
+            .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     );
 
-// Thundering Herd Problem:
-// If the ingestion API crashes, 5,000 sensors will throw an exception.
-// Without jitter and retries, they will all wait 2s and hammer the API at the exact same ms, crashing it again.
+// The DI container registers things by type and not by name (DI Keys are types)
+// AddHttpClient<T> registers T as transient but AddHttpClient(NAME) registers nothing.
+// Injecting a transient into a singleton would leave it trapped in the singleton's lifetime (app lifetime)
 
-// Polly fixes this using:
-// 1. Exponential Backoff (keep waiting longer between each failure: 2s, 4s, 8s)
-// 2. Jitter: the sensors backoff/fire at different rates, one waits 2.1s, another 2.7s
-// This gives the ingestion API more time to recover
-
-// For synchronous network calls (A -> B) where B is down and A is getting 1,000 reqs/s.
-// A will eventually crash too (cascading failure) because the connection pool and fds (file descriptors) will max out
-// Every request creates a TCP socket / fd, and the limit per process (aka per app) in Linux is 1024 or 4096 (ulimit -n)
-
-// Polly fixes unresponsive services via the circuit breaker pattern (to prevent A from crashing)
-// 1. Closed (Normal): Traffic flows freely.
-// 2. Open (Tripped): If failures cross a threshold (e.g., 5 in a row), the circuit "opens" (rejects all new reqs)
-// 3. Half-Open (Testing): After a cooldown (e.g., 30s), it lets one test request through.
-
-// Create the HttpClient client (which is HTTP/1.1 in .NET)
+// HttpClient is a thin wrapper over an HttpMessageHandler chain (Polly on top, Sockets at the bottom).
+// A captured client holds onto one chain forever, and DNS is only resolved when a new connection opens.
+// So, the undisposed client keeps talking to the gateway's old IP indefinitely even if it changed.
 builder
-    .Services.AddHttpClient<EmulatorWorker>(client => client.BaseAddress = new Uri(ingestionApiUrl))
-    .AddStandardResilienceHandler(); // Add polly (Resilience)
+    .Services.AddHttpClient(
+        TelemetryClient.Name,
+        (serviceProvider, client) =>
+            client.BaseAddress = new Uri(
+                // this grabs it from the DI container (no earlier .Get<T> necessary)
+                serviceProvider.GetRequiredService<IOptions<GatewayOptions>>().Value.Url
+            )
+    )
+    .AddStandardResilienceHandler(); // Adds Polly
 
-// When you dispose of a socket it takes 60s to cleanup because it waits for delayed network packets
-// AddHttpClient keeps a pool of client sockets open and reuses them (new HttpClient() creates a socket)
+// Polly adds retries with exponential backoff + jitter and a circuit breaker.
+// Some sensors won't have this, but some do have backoff + jitter at the firmware level.
+//
+// Retries guarantee ALO delivery (every hop is ALO in this project)
+// A retry happens when an outcome is ambigious (might've worked but res is lost)
+//
+// Combining ALO delivery + an idempotent receiver = effectively-once (EffO)
+// Exactly Once (EOS) is not possible at the transport layer alone.
 
-// Register the BackgroundService
-builder.Services.AddHostedService<EmulatorWorker>();
+// This is a decoupling buffer, not a durability buffer
+// It prevents the emulator from waiting on the network (if it's slow or down)
+// The emulator saves to RAM, while the gateway persists in storage
+//
+// A Channel is a thread-safe, async, in-memory queue
+// FullMode decides what happens when it's full (Wait, DropOldest, DropNewest)
+// FullMode.Wait means it won't evict anything when it's full
+builder.Services.AddSingleton(
+    // Bounded to limit RAM usage (sensor is RAM limited)
+    Channel.CreateBounded<TelemetryDto>(
+        new BoundedChannelOptions(emulator.BufferCapacity)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = false, // one writer per simulated device
+        }
+    )
+);
 
-// HTTP/1.1 also has HOL blocking, where the server must return responses in request order
-// If client sends A (long duration) and B (short duration), B is blocked until A is finished
+// Singleton because a meter and its instruments are process-wide state.
+builder.Services.AddSingleton<SensorMetrics>();
 
-// This shouldn't happen much in my emulator because
-// 1. Each request is the same duration (less likely to have HOL)
-// 2. I only need one TCP connection per client that can be reused (keep-alive)
-
-// I'm switching to gRCP streams instead though because
-// 1. JSON is text heavy and requires repetitive string parsing to extract data (CPU intensive)
-// 2. Maybe my emulator makes different requests in the future that benefit from HTTP/2 streams
-
-// HTTP/2 fixed HTTP HOL but not TCP HOL
-// If a packet is dropped, TCP has to recover it before delivering any of the later bytes.
-// This blocks all the other streams because streams are an HTTP thing not a TCP thing.
-// HTTP/3 gives streams independent transport-level delivery
+// These two are registered as singletons (careful what you inject into them)
+// Writes sensor readings, never waits for transmission
+// Transmission reads, never waits on acquisition
+builder.Services.AddHostedService<AcquisitionWorker>();
+builder.Services.AddHostedService<TransmissionWorker>();
 
 var host = builder.Build();
 host.Run(); // Blocks and listens for SIGTERM (Docker) or Ctrl+C
 
-public class EmulatorWorker(HttpClient client, ILogger<EmulatorWorker> logger) : BackgroundService
+public static class TelemetryClient
 {
-    const string TelemetryRoute = "/api/telemetry";
+    public const string Name = "telemetry";
+    public const string Route = "/api/local/telemetry";
+}
 
+/// <summary>
+/// LOOP 1: acquisition. Generates readings and never touches the network.
+/// Acts as the producer in the Producer/Consumer (P/C pattern).
+/// The drop rate is DeviceCount / IntervalSeconds (4 / 2 = 2 readings/sec)
+///
+/// IOptions&lt;T&gt; can only be injected from a built service provider (builder.Build())
+/// </summary>
+public class AcquisitionWorker(
+    Channel<TelemetryDto> channel,
+    IOptions<EmulatorOptions> emulatorOptions,
+    SensorMetrics metrics,
+    ILogger<AcquisitionWorker> logger
+) : BackgroundService
+{
+    private readonly EmulatorOptions options = emulatorOptions.Value;
+
+    // Each docker container runs multiple devices with 2 sensors
+    // I couldn't 1:1 container:device because .NET Runtime is 50-100MB (500MB-1GB for 10 devices)
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Industrial Emulator Started.");
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
-        int count = 0;
+        // 0, 4, 8 (device count = 4)
+        var firstDevice = options.ReplicaId!.Value * options.DeviceCount;
+
+        // Range(start, count) not (start, end)
+        var devices = Enumerable
+            .Range(firstDevice, options.DeviceCount)
+            .Select(n => $"EQ-{n}")
+            .ToArray();
+
+        logger.LogInformation(
+            "Acquisition started. Devices {First}..{Last} every {Interval}s.",
+            devices[0],
+            devices[^1],
+            options.IntervalSeconds
+        );
+
+        await Task.WhenAll(devices.Select(id => RunDeviceAsync(id, stoppingToken)));
+    }
+
+    private async Task RunDeviceAsync(string equipmentId, CancellationToken stoppingToken)
+    {
+        // Everything in here is per device, not per docker container
+
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(options.IntervalSeconds));
+
+        // Monotonic and used by the cloud to detect gaps (900 readings & 950 seq = 50 vanished)
+        // Restarting the emulator resets seq, real firmware would persist seq.
+        long seq = 0;
 
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
-            count++;
-            bool isHardwareFailure = count % 10 == 0;
-            bool isOverHeating = count % 7 == 0;
+            seq++;
 
-            string equipmentId = $"EQ-{Random.Shared.Next(1, 5)}";
+            // Uses seq so each device has the same fault cadence
+            bool isHardwareFailure = seq % 10 == 0;
+            bool isOverHeating = seq % 7 == 0;
+
+            // NextDouble() [0.0, 1.0], temp [70, 110]
             double temp =
                 isHardwareFailure ? -999.0
                 : isOverHeating ? 245.0
-                : Random.Shared.NextDouble() * (110 - 70) + 70; // NextDouble() [0.0, 1.0], temp [70, 110]
+                : Random.Shared.NextDouble() * (110 - 70) + 70;
+
+            // oilPressure [30, 60]
             double oilPressure = Random.Shared.NextDouble() * (60 - 30) + 30;
 
-            var data = new TelemetryDto(equipmentId, temp, oilPressure);
+            // MessageId prevents duplicates (e.g., from a retry request -> gateway)
+            // Event time is when the event happened, processing time is when it was received
+            var data = new TelemetryDto(
+                // v4 (Guid.NewGuid()) has random keys while v7 has time-based keys
+                // Random keys dirty a different page in PG's DB index for every insert
+                // If an arbitary page is full and a new random key needs to go in there
+                // PG's DB index will split that page in half to add that random key
+                // Time-based keys all land on the index's rightmost page, which stays cached.
+                MessageId: Guid.CreateVersion7().ToString(),
+                EquipmentId: equipmentId,
+                SequenceNumber: seq,
+                OccurredAt: DateTimeOffset.UtcNow, // Event time
+                EngineTemperature: temp,
+                OilPressure: oilPressure
+            );
 
+            metrics.Acquired.Add(1);
+
+            // Non-blocking by design, if the buffer is full, drop the reading.
+            if (!channel.Writer.TryWrite(data))
+                metrics.Dropped.Add(1);
+        }
+    }
+}
+
+/// <summary>
+/// LOOP 2: Drains the buffer (channel) to send to the gateway.
+/// </summary>
+public class TransmissionWorker(
+    Channel<TelemetryDto> channel,
+    IHttpClientFactory httpClientFactory,
+    SensorMetrics metrics,
+    ILogger<TransmissionWorker> logger
+) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        logger.LogInformation("Transmission started.");
+
+        await foreach (var data in channel.Reader.ReadAllAsync(stoppingToken))
+        {
             try
             {
-                // Polly handles retries/circuit breakers under the hood.
-                // stoppingToken ensures we abort the HTTP call if the app is shutting down.
-                var response = await client.PostAsJsonAsync(TelemetryRoute, data, stoppingToken);
+                // CreateClient() returns a new HttpClient but not a new handler chain.
+                // The factory pools chains for TelemetryClient.Name that the client uses.
+                // It then expires each chain after HandlerLifetime (2 mins by default).
+                // This lets it detect DNS changes every 2 mins (DNS is only stale for 2 mins)
+                var client = httpClientFactory.CreateClient(TelemetryClient.Name);
+
+                // The stoppingToken will abort the HTTP call on shutdown
+                // But that only stops the client from waiting for a response
+                // This means the result on the server is ambiguous (EffO protects)
+                var response = await client.PostAsJsonAsync(
+                    TelemetryClient.Route,
+                    data,
+                    stoppingToken
+                );
 
                 if (response.IsSuccessStatusCode)
                 {
-                    string status = isOverHeating ? "[ALARM]" : "[OK]";
+                    metrics.Sent.Add(1);
+                    string status = data.EngineTemperature > 200 ? "[ALARM]" : "[OK]";
                     logger.LogInformation(
-                        "{Status} Sent {Id}: {Temp:F1}°C",
+                        "{Status} Sent {EquipmentId} #{Seq}: {Temp:F1}C",
                         status,
                         data.EquipmentId,
+                        data.SequenceNumber,
                         data.EngineTemperature
+                    );
+                }
+                else if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    // BACKPRESSURE -> consumer telling producer to slow down
+                    // Polly reads/respects the consumer's Retry-After response header
+                    metrics.Rejected.Add(1);
+                    logger.LogWarning(
+                        "[BACKPRESSURE] Gateway buffer full, asked to retry after {RetryAfter}",
+                        response.Headers.RetryAfter?.ToString() ?? "unspecified"
                     );
                 }
                 else
                 {
                     var error = await response.Content.ReadAsStringAsync(stoppingToken);
-                    logger.LogWarning("[REJECTED] {Id} : {Error}", data.EquipmentId, error);
+                    logger.LogWarning(
+                        "[REJECTED] {EquipmentId} : {Error}",
+                        data.EquipmentId,
+                        error
+                    );
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // Polly retries transient errors automatically. If it still fails, it throws here.
-                logger.LogError("[CRITICAL] API is down: {Message}", ex.Message);
+                // Two different paths land here (circuit breaker related)
+                // 1. Polly exhausted its retries (timeout, 5xx, conn reset)
+                // 2. The circuit is open from earlier failures (didn't even try)
+                metrics.Failed.Add(1);
+                logger.LogError("[CRITICAL] Gateway is down: {Message}", ex.Message);
+                // If 2. it will eventually send a half-open PROBE, not a retry to close the circuit
             }
         }
     }
 }
 
-public record TelemetryDto(string EquipmentId, double EngineTemperature, double OilPressure);
+public record TelemetryDto(
+    string MessageId,
+    string EquipmentId,
+    long SequenceNumber,
+    DateTimeOffset OccurredAt,
+    double EngineTemperature,
+    double OilPressure
+);

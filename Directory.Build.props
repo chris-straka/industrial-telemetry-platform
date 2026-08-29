@@ -1,0 +1,17 @@
+<Project>
+
+  <!-- MSBuild imports this into every project below it, before the project's own settings -->
+  <!-- A csproj can still override anything here -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Turns malformed XML doc comments into build warnings instead of broken tooltips -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!-- 1591 is "missing XML comment on a public member", which suits libraries, not apps -->
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
+
+</Project>

@@ -1,8 +1,24 @@
 {
-    "editor.formatOnSave": true,
-    "editor.defaultFormatter": "ms-dotnettools.csharp",
     "[csharp]": {
         "editor.defaultFormatter": "csharpier.csharpier-vscode"
+    },
+    "[dockercompose]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+    "[dockerfile]": {
+        "editor.defaultFormatter": "ms-azuretools.vscode-containers"
+    },
+    "[github-actions-workflow]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+    "[proto]": {
+        "editor.defaultFormatter": "DrBlury.protobuf-vsc"
+    },
+    "[terraform-vars]": {
+        "editor.defaultFormatter": "hashicorp.terraform"
+    },
+    "[terraform]": {
+        "editor.defaultFormatter": "hashicorp.terraform"
     },
     "[xml]": {
         "editor.defaultFormatter": "csharpier.csharpier-vscode"
@@ -10,23 +26,17 @@
     "[yaml]": {
         "editor.defaultFormatter": "esbenp.prettier-vscode"
     },
-    "[dockercompose]": {
-        "editor.defaultFormatter": "esbenp.prettier-vscode"
-    },
-    "[github-actions-workflow]": {
-        "editor.defaultFormatter": "esbenp.prettier-vscode"
-    },
-    "[terraform]": {
-        "editor.defaultFormatter": "hashicorp.terraform"
-    },
-    "[terraform-vars]": {
-        "editor.defaultFormatter": "hashicorp.terraform"
+    "editor.defaultFormatter": "ms-dotnettools.csharp",
+    "editor.formatOnSave": true,
+    "files.watcherExclude": {
+        "**/bin/**": true,
+        "**/node_modules/**": true,
+        "**/obj/**": true
     },
     "makefile.configureOnOpen": false,
-    "[dockerfile]": {
-        "editor.defaultFormatter": "ms-azuretools.vscode-containers"
-    },
-    "[proto]": {
-        "editor.defaultFormatter": "DrBlury.protobuf-vsc"
+    "search.exclude": {
+        "**/bin": true,
+        "**/node_modules": true,
+        "**/obj": true
     }
 }

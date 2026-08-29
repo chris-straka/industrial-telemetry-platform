@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Industrial.Diagnostics.Worker.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260428231306_first")]
-    partial class First
+    [Migration("20260823210550_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -41,13 +41,30 @@ namespace Industrial.Diagnostics.Worker.Migrations
                     b.Property<bool>("IsAnomaly")
                         .HasColumnType("boolean");
 
+                    b.Property<Guid>("MessageId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<double>("OilPressure")
                         .HasColumnType("double precision");
 
-                    b.Property<DateTime>("Timestamp")
+                    b.Property<DateTimeOffset>("PersistedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("SequenceNumber")
+                        .HasColumnType("bigint");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("MessageId")
+                        .IsUnique();
+
+                    b.HasIndex("EquipmentId", "OccurredAt");
 
                     b.ToTable("TelemetryReadings");
                 });

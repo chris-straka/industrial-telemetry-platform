@@ -1,27 +1,83 @@
-# Agritech
+# Industrial Platform
 
-Cloud-hosted .NET Core microservice app that ingests simulated sensor data (e.g., from industrial devices) and flags issues.
+Cloud-hosted .NET microservice platform that ingests telemetry from simulated industrial
+equipment and flags anomalies with ML.NET plus an AI-generated diagnosis.
 
-Data flow diagram
+Readings are written to durable local storage on an edge gateway before they are
+acknowledged, so sensors keep producing through a total cloud outage and the queue drains
+when it ends. `make verify` measures the result: zero lost, zero duplicated.
+
+# Data flow
 
 ```
-                         sensor-emulator
-                               │ (HTTP POST)
-                               ▼
-                         ingestion-api
-                               │ (Produces to Kafka: telemetry-events)
-                               ▼
-   ┌───────────────────────── Kafka ────────────┐
-   │                           ▲                │
-   ▼                           │                ▼
-diagnostics-worker             │             web-api
- ├─ Consumes telemetry-events  │              ├─ Consumes telemetry-events
- ├─ Runs ML Anomaly Check      │              ├─ Consumes telemetry-alerts
- ├─ Saves to Postgres          │              └─ Relays live data via SignalR
- ├─ Calls Gemini AI            │                             │
- └─ Produces telemetry-alerts──┘                             ▼
-                                                       web-dashboard
+                    sensor-emulator
+                    (N fake devices, mints MessageId + OccurredAt)
+                          │ HTTP/JSON, LAN
+                          ▼
+   ┌─────────────────── edge-gateway ───────────────────┐
+   │  receiver ──► SQLite (WAL, fsync per commit)       │
+   │                    │                               │
+   │                    ▼                               │
+   │              uploader ──► oldest-first, batched    │
+   │                                                    │
+   │  + bounded buffer w/ 429 + Retry-After backpressure │
+   │  + exponential backoff w/ jitter                   │
+   │  + OTel: queue depth, oldest message age           │
+   └────────────────────┬───────────────────────────────┘
+                        │ gRPC client-stream (HTTP/2), WAN
+                        ▼
+                    ingestion-api
+                        │ produces to Kafka: telemetry-events
+                        ▼
+   ┌───────────────────── Kafka ──────────────┐
+   │                      ▲                   │
+   ▼                      │                   ▼
+diagnostics-worker        │                web-api
+ ├─ dedupes on MessageId  │                 ├─ consumes telemetry-events
+ ├─ ML.NET anomaly check  │                 ├─ consumes telemetry-alerts
+ ├─ saves to Postgres     │                 └─ relays live data via SignalR
+ ├─ calls Gemini          │                              │
+ └─ produces alerts ──────┘                              ▼
+                                                   web-dashboard
 ```
+
+# Delivery guarantees
+
+The transport is at-least-once. Exactly-once is not something gRPC or Kafka hands you:
+if a connection dies after the server commits but before the ACK arrives, the sender
+cannot know what happened, so it must re-send.
+
+What makes that safe is that every reading carries an immutable `MessageId` minted by
+the **sensor** — not by the gateway, not by the API. A unique index on it in both SQLite
+and Postgres turns a duplicate delivery into a no-op.
+
+> at-least-once delivery + idempotent consumer = effectively-once processing
+
+Two clocks are carried end to end so an outage stays measurable:
+
+| field | whose clock | meaning |
+| --- | --- | --- |
+| `OccurredAt` | sensor | when the reading was taken (event time) |
+| `ReceivedAt` | cloud | when the cloud accepted it (processing time) |
+
+Without `OccurredAt`, readings drained after a 30 minute outage would all claim to have
+happened in the seconds it took to flush the queue.
+
+A monotonic `SequenceNumber` per device makes loss detectable too: if a device produced
+N readings, `MAX(SequenceNumber)` must equal `COUNT(*)`. Any shortfall is data lost.
+
+# The demo
+
+```sh
+make demo-help          # prints the whole script
+make upd                # everything up, queue depth ~0
+make chaos-cloud-down   # kill the cloud; queue climbs, sensors keep producing
+make chaos-gateway-kill # kill the gateway too, mid-outage; buffer survives
+make chaos-cloud-up     # cloud returns; queue drains oldest-first
+make verify             # duplicates = 0, missing = 0, and the lag spike
+```
+
+Watch `edge_queue_depth` and `edge_oldest_message_age_seconds` in Grafana while it runs.
 
 # Install
 
@@ -32,8 +88,21 @@ diagnostics-worker             │             web-api
 - [Node](https://nodejs.org/en)
 - [Terraform](https://developer.hashicorp.com/terraform/install)
 
-# Key Features Include:
+# Ports
 
-Data Ingestion Pipeline (C#/.NET Core & SQL): Create REST APIs to receive continuous telemetry/sensor data and store it in a SQL database.
+| service | host port | notes |
+| --- | --- | --- |
+| web-dashboard | 5173 | Vite dev server |
+| web-api | 5090 | SignalR hub |
+| ingestion-api | 5089 | REST (HTTP/1.1), manual testing only |
+| ingestion-api | 5091 | gRPC (HTTP/2 cleartext) |
+| edge-gateway | 5272 | sensor receiver + `/health` |
+| grafana | 3000 | anonymous admin |
+| kafka-ui | 8080 | |
+| pgadmin | 5050 | |
 
-AI Diagnostic Service (C# & AI API): Build a backend service that detects anomalies or error codes in the incoming data and uses an AI API to generate troubleshooting steps for the equipment operator.
+# Notes
+
+Design notes live in [docs/](docs/) — [Networking](docs/Networking.md),
+[Kafka](docs/Kafka.md), [Observability](docs/Observability.md), [DB](docs/DB),
+[ML](docs/ML). Known gaps and planned work are in [TODO.md](TODO.md).

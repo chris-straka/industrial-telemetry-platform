@@ -25,7 +25,7 @@ using (var writer = new StreamWriter(csvPath))
     for (int i = 0; i < records; i++)
     {
         var timestamp = startTime.AddSeconds(i * 10).ToString("o");
-        var equipmentId = $"EQ-{Random.Shared.Next(1, 5)}";
+        var equipmentId = $"EQ-{Random.Shared.Next(0, 4)}";
 
         double baseTemp = 85.0;
         double temp = baseTemp + (Random.Shared.NextDouble() * 15); // Range: 85-100

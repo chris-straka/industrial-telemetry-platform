@@ -3,15 +3,22 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Industrial.Diagnostics.Worker.Infrastructure.Data;
 
-// This is where we define the SQL table/schema
-// relationships (many/one-to-many), constraints, indexes, precision...
-// It's registered as "Scoped" i.e. temporary
+// Where the schema is defined: tables, relationships, constraints, indexes, precision.
+// Registered through AddPooledDbContextFactory, so the worker creates and disposes one
+// per message instead of holding a long-lived context.
 public class AppDbContext : DbContext
 {
     public AppDbContext(DbContextOptions<AppDbContext> options)
         : base(options) { }
 
-    // Set creates an SQL table with TelemetryReading for its fields
-    // Set is NOT a mathematical set
     public DbSet<TelemetryReading> TelemetryReadings => Set<TelemetryReading>();
+
+    // The indexes are [Index] attributes on TelemetryReading so each constraint sits
+    // next to the field it protects: UNIQUE (MessageId) for dedupe, and
+    // (EquipmentId, OccurredAt) for the dashboard's read pattern.
+    //
+    // Dedupe is a unique index rather than a check-then-insert in code
+    // A code check is advisory and races across worker replicas; the index cannot be
+    //
+    // Changing this needs `make migrate name=X && make db-update`.
 }

@@ -1,0 +1,21 @@
+@GatewayAddr = http://localhost:5272
+
+### Buffer depth. Run this while the cloud is stopped and watch it climb.
+GET {{GatewayAddr}}/buffer
+
+### Inject a reading as if it came from a sensor.
+### MessageId is minted by the CALLER on purpose -- that is the whole point.
+POST {{GatewayAddr}}/api/local/telemetry
+Content-Type: application/json
+
+{
+  "messageId": "22222222-2222-2222-2222-222222222222",
+  "equipmentId": "EQ-99",
+  "sequenceNumber": 1,
+  "occurredAt": "2026-08-21T12:00:00Z",
+  "engineTemperature": 245.0,
+  "oilPressure": 42.5
+}
+
+### Send the request above twice. Both return 202, one row is buffered.
+### The unique index on MessageId collapses the retry.

@@ -1,2 +1,9 @@
 [tools]
 helm = "latest"
+# buf: proto linting + BREAKING CHANGE detection against git history.
+#      `buf breaking --against '.git#branch=main'` catches a field renumber or a
+#      removed field before it ships -- the wire-compat mistake that is invisible
+#      in code review. Worth a CI step.
+buf = "latest"
+# grpcurl: curl for gRPC. Hit StreamTelemetry by hand without writing a client.
+grpcurl = "latest"

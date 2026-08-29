@@ -36,7 +36,10 @@ publish/
 artifacts/
 
 # Local secrets/config
-appsettings.Development.json
+# appsettings.Development.json is COMMITTED on purpose -- it is non-secret local wiring
+# (ports, service names, intervals) and it is how a fresh clone runs without guesswork.
+# Real secrets go in .NET User Secrets (dotnet user-secrets), which live OUTSIDE the
+# repo in ~/.microsoft/usersecrets/, or in .env for docker compose.
 secrets.json
 
 # Coverage reports
@@ -49,7 +52,9 @@ coverage/
 .env.*
 !.env.example
 
+# Editor/language-server caches
+*.lscache
+
 # My stuff
 AI.md
-docs/*
 
