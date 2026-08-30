@@ -5,7 +5,7 @@ using Grpc.Core;
 namespace Industrial.Ingestion.Api.Features.Ingestion;
 
 /// <summary>
-/// Cloud-side terminus of the store-and-forward path. Accepts a stream of readings
+/// Cloud-side terminus of the store-and-forward path. Accepts a batch of readings
 /// from an Edge Gateway and hands each one to Kafka.
 /// </summary>
 public class TelemetryService(
@@ -13,12 +13,12 @@ public class TelemetryService(
     ILogger<TelemetryService> logger
 ) : TelemetryIngestion.TelemetryIngestionBase
 {
-    public override async Task<TelemetryResponse> StreamTelemetry(
-        IAsyncStreamReader<TelemetryRequest> requestStream,
+    public override async Task<TelemetryResponse> UploadTelemetry(
+        UploadTelemetryRequest request,
         ServerCallContext context
     )
     {
-        // Counted from the START of the stream. The gateway deletes exactly this many
+        // Counted from the START of the batch. The gateway deletes exactly this many
         // records off the front of the batch it sent, so we MUST stop at the first
         // failure rather than skipping it and continuing -- otherwise "the first N
         // succeeded" stops being true and the gateway drops a reading it never
@@ -28,22 +28,22 @@ public class TelemetryService(
 
         try
         {
-            await foreach (var request in requestStream.ReadAllAsync(context.CancellationToken))
+            foreach (var reading in request.Readings)
             {
                 var payload = new
                 {
-                    request.MessageId, // idempotency key -- the consumer dedupes on this
-                    request.EquipmentId,
-                    request.SequenceNumber, // lets the consumer detect gaps, i.e. loss
+                    reading.MessageId, // idempotency key -- the consumer dedupes on this
+                    reading.EquipmentId,
+                    reading.SequenceNumber, // lets the consumer detect gaps, i.e. loss
                     // EVENT TIME: the sensor's clock. Preserved end to end so that a
                     // batch drained after a 30 minute outage still reports when each
                     // reading actually happened, rather than when we got around to it.
-                    OccurredAt = request.OccurredAt.ToDateTimeOffset(),
+                    OccurredAt = reading.OccurredAt.ToDateTimeOffset(),
                     // PROCESSING TIME: our clock. Carrying both is what makes the lag
                     // during an outage measurable instead of invisible.
                     ReceivedAt = DateTimeOffset.UtcNow,
-                    request.EngineTemperature,
-                    request.OilPressure,
+                    reading.EngineTemperature,
+                    reading.OilPressure,
                 };
 
                 var message = new Message<string, string>
@@ -51,7 +51,7 @@ public class TelemetryService(
                     // Keying by EquipmentId puts all readings for one machine on one
                     // partition, which is what preserves their relative order. Keying
                     // by MessageId would spread them across partitions and lose it.
-                    Key = request.EquipmentId,
+                    Key = reading.EquipmentId,
                     Value = JsonSerializer.Serialize(payload),
                 };
 
@@ -73,13 +73,13 @@ public class TelemetryService(
             faulted = true;
             logger.LogError(
                 ex,
-                "Stream faulted after {Accepted} accepted readings. Gateway will retry the remainder.",
+                "Batch faulted after {Accepted} accepted readings. Gateway will retry the remainder.",
                 accepted
             );
         }
 
         logger.LogInformation(
-            "Accepted {Count} telemetry events from Edge Gateway via gRPC stream (faulted: {Faulted}).",
+            "Accepted {Count} telemetry events from Edge Gateway via gRPC (faulted: {Faulted}).",
             accepted,
             faulted
         );

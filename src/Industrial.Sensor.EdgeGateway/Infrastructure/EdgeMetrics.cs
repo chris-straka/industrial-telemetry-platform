@@ -18,6 +18,7 @@ public sealed class EdgeMetrics : IDisposable
     public const string MeterName = "Industrial.Sensor.EdgeGateway";
 
     private readonly Meter _meter;
+    private readonly Counter<long> _uploadFailures;
     private double _oldestAgeSeconds;
     private int _cloudReachable = 1;
 
@@ -63,7 +64,9 @@ public sealed class EdgeMetrics : IDisposable
             description: "Readings dropped because the cloud can never accept them."
         );
 
-        UploadFailures = _meter.CreateCounter<long>(
+        // Tagged by outcome, because an unreachable cloud and one refusing this caller
+        // are one climbing line otherwise, and they need different people to fix them
+        _uploadFailures = _meter.CreateCounter<long>(
             "edge.upload.failures",
             unit: "{attempt}",
             description: "Upload attempts that ended without a full acknowledgement."
@@ -100,10 +103,14 @@ public sealed class EdgeMetrics : IDisposable
     public Counter<long> Received { get; }
     public Counter<long> Duplicates { get; }
     public Counter<long> Uploaded { get; }
-    public Counter<long> UploadFailures { get; }
     public Counter<long> Poisoned { get; }
     public Counter<long> Shed { get; }
     public Counter<long> Malformed { get; }
+
+    // A method rather than a public counter, so every sample carries the tag
+    // An untagged Add from somewhere else would land in the same metric with no outcome at all
+    public void RecordUploadFailure(string outcome) =>
+        _uploadFailures.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
 
     public void SetOldestAgeSeconds(double seconds) =>
         Volatile.Write(ref _oldestAgeSeconds, seconds);

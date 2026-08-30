@@ -3,14 +3,18 @@ using System.Diagnostics;
 namespace Industrial.Sensor.EdgeGateway.Infrastructure;
 
 /// <summary>
-/// The gateway's ActivitySource, for the one span auto-instrumentation cannot draw.
+/// Gateway's ActivitySource (.NET's version of OTel's Tracer)
 /// </summary>
 /// <remarks>
-/// The AspNetCore and HttpClient instrumentation only cover a request in flight
-/// An upload is a disk read, N stream writes and a delete, so nothing emits a span for it
+/// This is a named factory for creating Activities.
 ///
-/// Program.cs subscribes by name with AddSource
-/// Without that StartActivity returns null, which is why UploaderWorker calls it with ?.
+/// Listeners listen to it by name/str (activities aren't created if no listeners)
+/// You can turn off OTel, making all activities null as well
+/// That's why UploaderWorker calls it with ?.
+///
+/// I need this because there's no auto-instrumentation for what the uploader does
+/// HttpClientInstrumentation() only sees the gRPC call, not the read-upload
+/// I need to create a new trace for the batch send I make to the cloud
 /// </remarks>
 public static class EdgeTracing
 {

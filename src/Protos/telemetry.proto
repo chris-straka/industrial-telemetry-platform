@@ -6,65 +6,62 @@ option csharp_namespace = "Industrial.Ingestion.Api";
 
 // The grpc_csharp_plugin generator I installed reads this service definition
 service TelemetryIngestion {
-  // Client streams multiple requests, Server responds once when the stream is closed.
+  // One message carries a whole batch, and the server answers once.
   //
-  // Why client-streaming and not unary-per-reading?
-  // The gateway uploads in batches drained from its local buffer. One HTTP/2 stream
-  // for 200 readings beats 200 round trips, and the single response tells us exactly
-  // how many the cloud committed (see accepted_count below).
+  // Unary-per-reading loses because it turns one round trip into 200.
+  // Client-streaming loses because the batch is bounded and already in memory.
+  // Bidirectional would ACK each record as it lands, which is better and more code.
+  // OTLP ships telemetry as unary with a repeated field for the same reasons.
   //
-  // Why not bidirectional (a per-message ACK flowing back)?
-  // That would let us delete each record the instant it lands instead of waiting for
-  // the batch to close, which is strictly better. It is also more code. Batch-with-a-
-  // count is the honest middle ground: correct, and easy to explain out loud.
-  rpc StreamTelemetry (stream TelemetryRequest) returns (TelemetryResponse);
+  // The cost is a ceiling: one batch is one message under a 4 MB MaxReceiveMessageSize.
+  // ~84 bytes a reading caps a batch near 50,000, and Uploader:BatchSize validates to 10,000.
+  rpc UploadTelemetry (UploadTelemetryRequest) returns (TelemetryResponse);
+}
+
+// One batch drained from the gateway's buffer, oldest first.
+// The order is load-bearing, because accepted_count means "the first N of these".
+message UploadTelemetryRequest {
+  repeated TelemetryReading readings = 1;
 }
 
 // The protoc generator I installed reads the message definitions
-message TelemetryRequest {
-  // Idempotency key. MINTED BY THE SENSOR, never by anything downstream.
-  //
-  // If the gateway generated this on receipt, a sensor that retried its POST would
-  // produce two different ids for one physical reading, and the key would defend
-  // nothing on the first hop. Same idea as Stripe's `Idempotency-Key` header.
+message TelemetryReading {
+  // Idempotency key, minted by the sensor and never regenerated downstream.
+  // Minting it at the gateway would leave the sensor's retried POST undefended.
+  // Same idea as Stripe's Idempotency-Key header.
   string message_id = 1;
 
   string equipment_id = 2;
 
-  // Monotonic per equipment_id, assigned by the sensor.
-  // Lets the cloud detect GAPS (loss) as well as duplicates:
-  //   readings received for EQ-1 == max(sequence_number) + 1  =>  nothing lost.
-  // This is what makes "lost = 0" a measurement instead of a claim.
+  // Monotonic per equipment_id, assigned by the sensor and starting at 1.
+  // Gaps prove loss, because MAX(sequence_number) must equal COUNT(*) per device.
+  // That makes "lost = 0" a measurement instead of a claim.
   int64 sequence_number = 3;
 
-  // EVENT TIME: when the sensor took the reading (sensor's clock).
-  //
-  // Without this the cloud can only stamp PROCESSING TIME, i.e. when it happened to
-  // consume the message. Buffer 18,000 readings through a 30 minute outage and every
-  // one of them would claim to have occurred during the five seconds it took to drain
-  // the queue -- the store-and-forward demo would erase its own evidence.
-  //
-  // Caveat worth saying out loud: edge devices have drifting RTCs, so event time is
-  // the device's opinion. Real fleets correct for skew or carry both clocks. We carry
-  // both (see received_at, stamped by the cloud) and let the consumer decide.
+  // EVENT TIME: when the sensor took the reading, on the sensor's clock.
+  // Without it, readings drained after an outage would all claim to have happened during the flush.
+  // Edge RTCs drift, so this is the device's opinion of the time.
+  // The cloud stamps its own received_at on arrival and the consumer decides which to trust.
   google.protobuf.Timestamp occurred_at = 4;
 
   double engine_temperature = 5;
   double oil_pressure       = 6;
+
+  // W3C traceparent of the gateway span that received this reading.
+  // Carried per reading rather than once per batch, because 200 readings arrive from 200 different traces.
+  // Empty when nothing was listening at the time, since proto3 has no null string.
+  string traceparent = 7;
 }
 
 message TelemetryResponse {
   bool success = 1;
 
-  // How many messages, counted from the START of the stream, the cloud durably
-  // accepted. The server stops counting at the first failure, so the gateway can
-  // delete exactly the first `accepted_count` records of the batch it sent and
-  // safely retry the rest.
+  // How many readings, counted from the START of the batch, the cloud durably accepted.
+  // The server stops counting at its first failure.
+  // So the gateway deletes exactly those rows and retries the rest.
   //
-  // If the connection dies before this response arrives, the gateway deletes
-  // NOTHING and re-sends the whole batch. Those re-sends are duplicates by
-  // construction -- which is fine, because the cloud dedupes on message_id.
-  // That is at-least-once delivery plus an idempotent consumer, which together
-  // give you effectively-once. gRPC does not hand you exactly-once for free.
+  // A response that never arrives deletes nothing and re-sends the whole batch.
+  // Those re-sends are duplicates by construction, and the cloud dedupes on message_id.
+  // At-least-once plus an idempotent consumer is effectively-once, gRPC has no exactly-once.
   int32 accepted_count = 2;
 }

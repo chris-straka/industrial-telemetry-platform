@@ -76,7 +76,7 @@ is dropped, and it is counted on `edge.telemetry.poisoned`.
 
 # The cap, and why the number matters less than its existence
 
-`MaxConsecutivePoisonDrops = 10`, reset by any accepted batch.
+`MaxConsecutiveDrops = 10`, reset by any accepted batch.
 
 Without a cap, "isolate and drop" has a catastrophic failure mode: a cloud that returns
 `InvalidArgument` for *everything* -- a bad deploy, a proto skew, a validation rule
@@ -103,7 +103,7 @@ more, and reports nothing at all.
   emptied.
 - The cap resets on any success, so a cloud alternating between accepting and rejecting
   could still drop steadily. Bounded by rate, not by total.
-- `_isolating`, `_consecutivePoisonDrops`, `_consecutiveFailures` and
+- `_sendOneAtATime`, `_consecutiveDrops`, `_consecutiveFailures` and
   `_consecutiveUnreachable` form an implicit state machine on a `BackgroundService`. It is
   the honest cost of dropping poison records at all. The last two are deliberately not one
   field: `_consecutiveFailures` sizes the backoff and is bumped by refusals and local

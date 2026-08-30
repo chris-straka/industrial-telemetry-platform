@@ -76,6 +76,9 @@ builder.Services.AddSingleton(sp => // service provider
 
 // Inheriting TelemetryIngestionBase is not enough on its own: without AddGrpc plus the
 // MapGrpcService below, a gateway connects and gets UNIMPLEMENTED.
+// A whole batch is one message, so AddGrpc's 4 MB MaxReceiveMessageSize default is the
+// real ceiling on Uploader:BatchSize: ~84 bytes a reading puts it near 50,000.
+// https://learn.microsoft.com/en-us/aspnet/core/grpc/configuration
 builder.Services.AddGrpc();
 
 builder.Services.AddOpenApi();
@@ -97,7 +100,7 @@ if (app.Environment.IsDevelopment())
 // Register the POST /api/telemetry route (legacy/manual-test path)
 app.MapIngestionEndpoints();
 
-// Register the gRPC StreamTelemetry service (the durable path, used by the Edge Gateway).
+// Register the gRPC UploadTelemetry service (the durable path, used by the Edge Gateway).
 // Bound to the Http2 Kestrel endpoint configured in appsettings.json -- see the note
 // there about why plaintext gRPC needs its own port.
 app.MapGrpcService<TelemetryService>();

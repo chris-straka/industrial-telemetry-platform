@@ -74,15 +74,13 @@ builder
         m.AddMeter(EdgeMetrics.MeterName)
             .AddAspNetCoreInstrumentation() // Receive endpoint (all inbound traffic)
             .AddHttpClientInstrumentation() // gRPC included (all outbound traffic)
-            .AddRuntimeInstrumentation() // Thread stuff
+            .AddRuntimeInstrumentation() // Threads, etc
             .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     )
     .WithTracing(t =>
         t.AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation()
-            // Our own spans. Without this the upload span is never sampled and its
-            // links to the buffered sensor traces are never emitted.
-            .AddSource(EdgeTracing.SourceName)
+            .AddSource(EdgeTracing.SourceName) // my spans
             .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     );
 
