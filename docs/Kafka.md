@@ -79,6 +79,44 @@ var producerConfig = new ProducerConfig
 };
 ```
 
+# Producer Idempotence
+
+Off by default. With it off the producer -> broker hop can write the same message twice,
+when a retry follows a lost acknowledgement. It can also land messages out of order, since
+several requests are in flight at once and a retry of the first can arrive after the second
+already succeeded.
+
+For the broker to recognise a retry it needs two things:
+
+- **A producer id.** Handed out when the producer connects. Without it the broker cannot
+  tell "this is the same client as a moment ago" from "this is a stranger", and a retry
+  looks exactly like a new message.
+- **A counter on each batch.** librdkafka numbers the batches it sends, counting separately
+  per partition. This is not the reading's own `SequenceNumber` -- same words, different
+  thing, minted by a different component for a different purpose.
+
+The broker keeps the last few counter values per producer id and partition, then:
+
+- a value it has already seen means a retry, so it drops the batch and answers success
+  anyway (the client never learns, and does not need to)
+- a value that skips ahead means an earlier batch has not landed, so it rejects this one
+
+The first rule is what removes duplicates. The second is what keeps the partition ordered:
+without it the broker would happily write batch 5 while batch 4 was still being retried.
+
+Turning it on forces `acks=all`, caps in-flight requests at 5, and requires retries above
+zero. The producer refuses to start if you set any of those to a conflicting value.
+
+**It holds for one producer session only.** A restart gets a new producer id and the broker
+links nothing across the two, so a message re-sent after a restart is not deduplicated
+here. That is the job of the unique index on `MessageId` in Postgres, which also covers
+Kafka redelivering the same message to a consumer.
+
+**Why it is load-bearing here.** `TelemetryService` launches all 200 `ProduceAsync` calls
+before awaiting any of them, so several requests really are in flight -- exactly the
+condition where a retry can reorder a partition. Ordering per machine is the entire reason
+readings are keyed by `EquipmentId`.
+
 # Consumer Rebalancing
 
 When an instance joins or leaves a group, Kafka stops all consumers in that group to re-assign partitions.

@@ -68,82 +68,53 @@ builder
 
 builder.Services.AddValidatorsFromAssemblyContaining<TelemetryValidator>();
 
+// Gateway's batch (200 readings) != Kafka's batches
+// One batch of 200 readings -> 200 kafka msgs (if none rejected)
+// Each kafka msg is key -> EquipmentId, value -> JSON envelope
+// These they get batched per partition into record batches
+
 // Setup Kafka
 builder.Services.AddSingleton(sp => // service provider
 {
-    // Get the .NET logger for the Kafka producer<Key, Value>
-    // (loggers can only write, not read)
+    // Loggers can only write, not read
     var logger = sp.GetRequiredService<ILogger<IProducer<string, string>>>();
 
-    // Set here so the delivery guarantee reads off one screen instead of librdkafka's defaults
-    // string/string keys and values get the built-in serializers for free
+    // Hover each of these props for tooltip (librdkafka runs locally)
     var config = new ProducerConfig
     {
         BootstrapServers = kafka.BootstrapServers,
-
-        // Every in-sync replica holds the write before we answer
-        // Acks.Leader answers sooner and loses the batch when the leader dies before its followers
         Acks = Acks.All,
-
-        // Defaults to FALSE, and without it a retry can duplicate and reorder within a partition
-        // Caps in-flight requests at 5, which is what makes launching 200 produces at once safe
         EnableIdempotence = true,
-
-        // How long librdkafka holds a request open to fill it (0 sends the first reading alone)
         LingerMs = 20,
-
-        // Has to sit under the gateway's Uploader:UploadTimeoutSeconds of 30
-        // The 5 minute default outlives that deadline by 4.5, holding a batch nobody waits for
         MessageTimeoutMs = 20_000,
-
-        // A ceiling on attempts, MessageTimeoutMs is what actually stops the retrying
-        MessageSendMaxRetries = 10,
-
-        // The payload is JSON, so Zstd over Lz4 for the ratio (both ends are Confluent.Kafka)
         CompressionType = CompressionType.Zstd,
-
-        // Nothing pre-creates the topic, so this is what lets `make upd` work from empty
-        // The broker invents it with default partitions and replication, which is the thing to fix
         AllowAutoCreateTopics = true,
-
-        MetadataMaxAgeMs = 5000, // Force refresh every 5s for fast startup
+        // MetadataMaxAgeMs = 5000,
     };
 
-    // Multiple msg types all use the same producer, not multiple
+    // You want one producer for each message type (only one here)
+    // <string, string> will use Kafka's default UTF-8 serializers
     return new ProducerBuilder<string, string>(config)
         .SetErrorHandler((_, e) => logger.LogError("Kafka Producer Error: {Reason}", e.Reason))
         .Build();
 });
 
-// Inheriting TelemetryIngestionBase is not enough on its own: without AddGrpc plus the
-// MapGrpcService below, a gateway connects and gets UNIMPLEMENTED.
-// A whole batch is one message, so AddGrpc's 4 MB MaxReceiveMessageSize default is the
-// real ceiling on Uploader:BatchSize: ~84 bytes a reading puts it near 50,000.
-// https://learn.microsoft.com/en-us/aspnet/core/grpc/configuration
 builder.Services.AddGrpc();
-
 builder.Services.AddOpenApi();
-
-// After this, you can't register services anymore (immutable)
 var app = builder.Build();
 
 app.Lifetime.ApplicationStopping.Register(() =>
 {
-    // cleanup Kafka
-    var producer = app.Services.GetRequiredService<IProducer<string, string>>();
-    producer.Flush(TimeSpan.FromSeconds(5));
-    producer.Dispose();
+    var kafkaProducer = app.Services.GetRequiredService<IProducer<string, string>>();
+    kafkaProducer.Flush(TimeSpan.FromSeconds(5));
+    kafkaProducer.Dispose();
 });
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 
-// Register the POST /api/telemetry route (legacy/manual-test path)
 app.MapIngestionEndpoints();
 
-// Register the gRPC UploadTelemetry service (the durable path, used by the Edge Gateway).
-// Bound to the Http2 Kestrel endpoint configured in appsettings.json -- see the note
-// there about why plaintext gRPC needs its own port.
 app.MapGrpcService<TelemetryService>();
 
 app.Run();
