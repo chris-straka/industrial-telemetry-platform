@@ -13,7 +13,8 @@ common.
 
 # Why a returned classification and not an exception
 
-`UploadBatchAsync` returns `UploadResult(UploadOutcome, Accepted)` instead of throwing.
+`UploadBatchAsync` returns `UploadResult(UploadOutcome, AcceptedIds, RejectedIds, Complete)`
+instead of throwing.
 
 Exceptions are for conditions the current frame cannot handle. The uploader can handle
 all of these -- surviving a dead cloud is the entire reason this process exists -- so an
@@ -38,20 +39,26 @@ precisely the stall this classification was added to fix.
 
 | outcome | statuses | loop does | `cloud.reachable` |
 | --- | --- | --- | --- |
-| `Answered` | none (normal return) | delete the first `Accepted`, retry the rest | 1 |
+| `Answered` | none (normal return) | delete every id the cloud named, retry the rest | 1 |
 | `Unreachable` | `Unavailable`, `DeadlineExceeded`, `Internal`, everything unlisted | backoff, retry forever | 0 |
-| `Malformed` | `InvalidArgument`, `OutOfRange` | narrow to one record, then drop that record | 1 |
+| `Malformed` | `InvalidArgument`, `OutOfRange` | log loudly, buffer forever, drop nothing | 1 |
 | `Refused` | `Unauthenticated`, `PermissionDenied`, `Unimplemented` | log loudly, buffer forever, drop nothing | 1 |
 
 The last two leave the gauge at 1 on purpose. The cloud answered; a rejection is proof of
 reachability, and an operator paged for "cloud unreachable" would go looking at the wrong
 machine.
 
-Caveat worth saying out loud: `TelemetryService` today never returns any of these
-statuses. It catches everything and returns OK with a short `accepted_count`. `Malformed`
-and `Refused` come from a proxy, a future auth interceptor, or a server that starts
-validating. The classification is defensive, and the honest version of that sentence is
-"this arm is currently unreachable in this deployment".
+`Malformed` and `Refused` now do the same thing, and that is the point: neither can be
+fixed by resending, so both hold the queue and page a human. They stay separate outcomes
+because they tag `edge.upload.failures` differently and send an operator to different
+machines -- one to the contract, one to the credentials.
+
+Caveat worth saying out loud: `TelemetryService` returns none of these statuses. It
+answers OK and names its per-reading rejections in `rejected_message_ids`. `Malformed`
+and `Refused` come from a proxy, a future auth interceptor, or a version skew that makes
+the two sides disagree about the contract itself. The classification is defensive, and
+the honest version of that sentence is "this arm is currently unreachable in this
+deployment".
 
 `ResourceExhausted` is deliberately left in the transient bucket. It is a rate limit as
 often as it is "your message is too large", and backoff is the right answer to the first.
@@ -59,7 +66,7 @@ often as it is "your message is too large", and backoff is the right answer to t
 # Dropping versus stalling
 
 Draining oldest-first makes the head of the queue a single point of failure. One record
-the cloud will never take blocks every reading behind it. Three options:
+the cloud will never take blocks every reading behind it. Four options:
 
 **Stall forever.** Never loses a byte, and that is how it reads on a slide. In practice
 the buffer keeps filling behind the stuck record until it hits `Buffer:MaxDepth`, at
@@ -70,23 +77,34 @@ the new data is the data someone is watching a dashboard for.
 **Drop the whole batch.** Throws away 199 readings the cloud never objected to, on the
 evidence of one it did.
 
-**Isolate, then drop one (chosen).** A whole-call rejection sends the next pass at batch
-size 1, which identifies the offending record in one extra round trip. Only that record
-is dropped, and it is counted on `edge.telemetry.poisoned`.
+**Have the cloud name the offender (chosen).** `TelemetryResponse.rejected_message_ids`
+carries the ids the server validated and refused. The gateway deletes exactly those,
+counts them on `edge.telemetry.poisoned`, and keeps sending full batches throughout.
 
-# The cap, and why the number matters less than its existence
+**Rejected: isolate by resending at batch size 1.** A whole-call `InvalidArgument` says
+only "something in there was bad", so finding out which meant re-sending the batch one
+reading per round trip -- 200 round trips to drop one record, with the queue still
+filling behind it. It also needed a cap on consecutive drops, because a cloud that called
+*everything* invalid would empty the buffer one record per round trip and every drop
+would look locally reasonable. Naming the ids removes the search and the cap with it.
 
-`MaxConsecutiveDrops = 10`, reset by any accepted batch.
+The cost is that the server must now validate. `TelemetryReadingValidator` holds the
+rules, and each one has to be a condition no retry can fix, because failing it deletes
+the reading. Anything transient belongs in the catch around `ProduceAsync` instead, which
+leaves the reading in the buffer.
 
-Without a cap, "isolate and drop" has a catastrophic failure mode: a cloud that returns
-`InvalidArgument` for *everything* -- a bad deploy, a proto skew, a validation rule
-someone tightened -- would empty the buffer one record per round trip, and every drop
-would look locally reasonable. The cap exists because the two failure modes are
-distinguishable by count. A genuinely bad reading is rare and isolated. A broken cloud
-rejects the eleventh one too.
+# Two lists, not one count
 
-Above the cap the uploader deliberately switches to the failure mode rejected above: hold
-everything, log, let the queue back up. That is the failure an operator can still fix.
+`accepted_message_ids` and `rejected_message_ids` mean opposite things and are deleted for
+opposite reasons. Accepted is durably Kafka's, so the gateway may forget it. Rejected will
+fail identically forever, so the gateway *must* forget it or stall. Anything in neither
+list is still the gateway's, and goes out on the next pass.
+
+A single `accepted_count` could not say this. A prefix count only describes a server that
+stops dead at its first failure -- the moment the server skips an invalid reading and
+carries on, no one number can distinguish "the reading I refused" from "the reading I
+never reached". The order of the batch stops being load-bearing at the same time, since
+the response names readings rather than positions.
 
 # This drop is real loss, and `make verify` will say so
 
@@ -101,11 +119,15 @@ more, and reports nothing at all.
 - No dead letter. A dropped reading is gone, not parked. A second SQLite table would keep
   it for inspection, at the cost of a table nothing drains and a policy for when it is
   emptied.
-- The cap resets on any success, so a cloud alternating between accepting and rejecting
-  could still drop steadily. Bounded by rate, not by total.
-- `_sendOneAtATime`, `_consecutiveDrops`, `_consecutiveFailures` and
-  `_consecutiveUnreachable` form an implicit state machine on a `BackgroundService`. It is
-  the honest cost of dropping poison records at all. The last two are deliberately not one
-  field: `_consecutiveFailures` sizes the backoff and is bumped by refusals and local
-  faults too, while `_consecutiveUnreachable` gates the one loud "cloud unreachable" line.
-  Sharing a counter meant a refusal could silence the outage log.
+- Nothing bounds how much the cloud may reject. A validation rule someone tightens, or a
+  proto skew that makes every reading look invalid, empties the buffer as fast as batches
+  go out and every drop is individually correct. `edge.telemetry.poisoned` is the only
+  thing that says so, which makes it an alert, not a graph.
+- `_consecutiveFailures` and `_consecutiveUnreachable` form an implicit state machine on a
+  `BackgroundService`. They are deliberately not one field: `_consecutiveFailures` sizes
+  the backoff and is bumped by refusals and local faults too, while
+  `_consecutiveUnreachable` gates the one loud "cloud unreachable" line. Sharing a counter
+  meant a refusal could silence the outage log.
+- A reading with an empty `MessageId` cannot be named in `rejected_message_ids`, so the
+  gateway would hold it forever. The receiver answering 400 to a reading without one is
+  what keeps such a row out of the buffer; nothing downstream re-checks it.

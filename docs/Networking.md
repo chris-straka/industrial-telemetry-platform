@@ -136,6 +136,23 @@ gRPC does NOT give you exactly-once.
 If a stream dies after the server committed but before the ACK arrives, you still don't know.
 Persistent queue + IDs + acknowledgement + dedupe is what solves it.
 
+# Why a batch and not one reading per call
+
+Batching is sized by outage recovery, not by steady state.
+At 200 a batch, draining a 100,000-reading buffer is 500 round trips.
+One reading per call is 100,000, and the gateway is still taking new readings while it drains, so a slow drain is a buffer that never catches up.
+
+**Rejected: unary-per-reading.**
+It makes every response trivially per-record, which is the one thing a batch has to work for.
+The cost is a round trip per reading on the hop that has the most to move at exactly the worst time.
+
+Batch size is a straight trade.
+Larger means fewer round trips and more readings re-sent when a response never arrives, since an ambiguous failure re-sends everything in flight.
+The ceiling is not tuning, though: one batch is one gRPC message under a 4 MB `MaxReceiveMessageSize`, which puts ~84 bytes a reading near 50,000.
+
+Batching costs nothing in correctness now that `TelemetryResponse` names readings by `MessageId` rather than counting a prefix.
+The cloud can accept, reject, or stay silent about any reading in the batch independently.
+
 # Protocol layering
 
 ```

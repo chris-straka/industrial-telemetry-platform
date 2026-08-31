@@ -19,7 +19,8 @@ service TelemetryIngestion {
 }
 
 // One batch drained from the gateway's buffer, oldest first.
-// The order is load-bearing, because accepted_count means "the first N of these".
+// Oldest-first is a drain policy, not a correctness requirement: the response names
+// each reading by message_id, so the server may answer about them in any order.
 message UploadTelemetryRequest {
   repeated TelemetryReading readings = 1;
 }
@@ -54,14 +55,32 @@ message TelemetryReading {
 }
 
 message TelemetryResponse {
+  // False when the batch stopped early on an infrastructure fault, so the gateway knows a
+  // remainder is still its problem. Both lists below are authoritative either way.
   bool success = 1;
 
-  // How many readings, counted from the START of the batch, the cloud durably accepted.
-  // The server stops counting at its first failure.
-  // So the gateway deletes exactly those rows and retries the rest.
+  // Reserved so a gateway built against an older contract cannot read a later field as the
+  // scalar it expects here.
+  reserved 2;
+
+  // Readings durably produced to Kafka. The gateway deletes exactly these.
+  //
+  // Ids rather than a count of the batch prefix, because a prefix can only describe a server
+  // that stops dead at its first failure.
+  // This one skips an invalid reading and keeps going, which no single number can express.
+  // The cost is ~36 bytes a reading on a response answering a ~17 KB request.
   //
   // A response that never arrives deletes nothing and re-sends the whole batch.
   // Those re-sends are duplicates by construction, and the cloud dedupes on message_id.
   // At-least-once plus an idempotent consumer is effectively-once, gRPC has no exactly-once.
-  int32 accepted_count = 2;
+  repeated string accepted_message_ids = 3;
+
+  // Readings the cloud will never accept no matter how often they are sent.
+  // The gateway deletes these too and counts them as poison, because a retry cannot help.
+  //
+  // Naming them here rather than failing the whole call with INVALID_ARGUMENT is what lets
+  // the gateway keep sending full batches.
+  // A call-level rejection says only "something in there was bad", which leaves resending
+  // one reading at a time as the sole way to find out which.
+  repeated string rejected_message_ids = 4;
 }

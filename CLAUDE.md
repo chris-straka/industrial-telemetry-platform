@@ -16,7 +16,7 @@ consequences that override normal instincts:
    - Default: on a declaration (type, member, field), one or two sentences naming the
      alternative and the single reason it lost. Write it as plain prose — no "Rejected:"
      label, no compressed jargon, and spell the noun out ("Microsoft.Data.Sqlite", not
-     "a driver"). One thought per line; never wrap a sentence across two lines.
+     "a driver").
    - Inside a method body: only when that specific line *is* the decision, and only if it
      stays that short.
    - Anything longer, or that has to sketch how the alternative would have worked, is a
@@ -51,12 +51,18 @@ The mechanism, in order — do not break any link without saying so explicitly:
 - The **gateway** writes to SQLite in WAL mode with `synchronous=FULL` *before* it ACKs
   the sensor, then uploads oldest-first.
 
-  It deletes a record only once the cloud confirms it. The gateway sends a batch of 200
-  over one gRPC stream; the server counts how many it durably produced to Kafka and
-  returns that number as `TelemetryResponse.accepted_count`. Because the batch was sent
-  in order and the server stops counting at its first failure, "accepted 150" means
-  precisely "the first 150 you sent", so the gateway deletes those and retries the rest.
-  If the response never arrives at all, it deletes nothing and re-sends everything.
+  It deletes a record only once the cloud has settled it. The gateway sends a batch of 200
+  over one gRPC stream; the server answers with two lists of `MessageId`s —
+  `accepted_message_ids` for what it durably produced to Kafka, and
+  `rejected_message_ids` for what it will refuse no matter how often it is sent. The
+  gateway deletes both and re-sends everything named in neither, so a reading is only
+  forgotten once the cloud has said which of the two it is. If the response never arrives
+  at all, it deletes nothing and re-sends everything.
+
+  Ids rather than a count of the batch prefix, because a count can only describe a server
+  that stops dead at its first failure, and this one skips an invalid reading and keeps
+  going. That is also what lets the gateway drop a poison record without first resending
+  the batch one reading at a time to find it.
 - **Two unique indexes on `MessageId`, guarding two different hops.** The gateway's
   SQLite index absorbs a retried sensor POST. Postgres's index absorbs a re-sent gateway
   batch and a Kafka redelivery. They are not the same defense.
@@ -164,7 +170,7 @@ make migrate name=X && make db-update   # EF migrations (Diagnostics.Worker owns
 
 | file | covers |
 | --- | --- |
-| `docs/Networking.md` | HttpClient pooling, thundering herd, HOL blocking, HTTP/1.1→3, buffer durability |
+| `docs/Networking.md` | HttpClient pooling, thundering herd, HOL blocking, HTTP/1.1→3, why batches, buffer durability |
 | `docs/NET.md` | project SDKs, `FrameworkReference`, `IHttpClientFactory` internals, config gotchas |
 | `docs/Kafka.md` | brokers, partitions, offsets, delivery semantics, poison messages |
 | `docs/Kubernetes.md` | Deployment vs StatefulSet, PVCs, ordered rollout |
