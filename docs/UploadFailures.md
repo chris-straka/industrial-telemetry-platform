@@ -79,7 +79,7 @@ evidence of one it did.
 
 **Have the cloud name the offender (chosen).** `TelemetryResponse.rejected_message_ids`
 carries the ids the server validated and refused. The gateway deletes exactly those,
-counts them on `edge.telemetry.poisoned`, and keeps sending full batches throughout.
+counts them on `edge.telemetry.rejected`, and keeps sending full batches throughout.
 
 **Rejected: isolate by resending at batch size 1.** A whole-call `InvalidArgument` says
 only "something in there was bad", so finding out which meant re-sending the batch one
@@ -110,7 +110,7 @@ the response names readings rather than positions.
 
 A dropped reading breaks `MAX(SequenceNumber) == COUNT(*)` for its device. That is not a
 flaw in the check -- it is the check working. The invariant this repo protects is that
-loss is impossible *silently*; a poison drop is loss that is counted, logged with its
+loss is impossible *silently*; a refused reading is loss that is counted, logged with its
 `MessageId`, and visible as a gap. The alternative was a stall that eventually loses far
 more, and reports nothing at all.
 
@@ -121,7 +121,7 @@ more, and reports nothing at all.
   emptied.
 - Nothing bounds how much the cloud may reject. A validation rule someone tightens, or a
   proto skew that makes every reading look invalid, empties the buffer as fast as batches
-  go out and every drop is individually correct. `edge.telemetry.poisoned` is the only
+  go out and every drop is individually correct. `edge.telemetry.rejected` is the only
   thing that says so, which makes it an alert, not a graph.
 - `_consecutiveFailures` and `_consecutiveUnreachable` form an implicit state machine on a
   `BackgroundService`. They are deliberately not one field: `_consecutiveFailures` sizes

@@ -63,10 +63,10 @@ public sealed class EdgeMetrics : IDisposable
             description: "Readings rejected with 400 for a missing MessageId or EquipmentId."
         );
 
-        Poisoned = _meter.CreateCounter<long>(
-            "edge.telemetry.poisoned",
+        Rejected = _meter.CreateCounter<long>(
+            "edge.telemetry.rejected",
             unit: "{reading}",
-            description: "Readings dropped because the cloud can never accept them."
+            description: "Readings dropped because the cloud named them as permanently refused."
         );
 
         // Tagged by outcome, because an unreachable cloud and one refusing this caller
@@ -104,7 +104,7 @@ public sealed class EdgeMetrics : IDisposable
     public Counter<long> Received { get; }
     public Counter<long> Duplicates { get; }
     public Counter<long> Uploaded { get; }
-    public Counter<long> Poisoned { get; }
+    public Counter<long> Rejected { get; }
     public Counter<long> Shed { get; }
     public Counter<long> Malformed { get; }
 

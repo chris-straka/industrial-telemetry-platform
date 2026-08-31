@@ -169,12 +169,15 @@ identically on every attempt, so the retries are pure latency.
 **Drop and log.** Delete it, log it loudly, and count it on a metric so the loss is
 visible rather than silent.
 
-The gateway does the third (`UploaderWorker`, counted as `edge.telemetry.poisoned`) and so
+The gateway does the third (`UploaderWorker`, counted as `edge.telemetry.rejected`) and so
 does the consumer (`TelemetryConsumerWorker`). That is a deliberate scope decision, not an
-oversight: both are tracked in `TODO.md` as needing a DLQ. The reasoning is that a reading
-which cannot be turned into a protobuf message is a bug in this codebase, not a data
-problem a human could triage from a dead letter topic -- but that argument gets weaker the
-moment the payload schema is owned by someone else.
+oversight: both are tracked in `TODO.md` as needing a DLQ.
+
+The gateway's version is milder than a classic poison message. The cloud names the ids it
+refuses in `rejected_message_ids` instead of failing the whole call, so the gateway never
+retries a refused reading and nothing queues behind it -- the head-of-line blocking that
+makes a poison message dangerous never starts. What is missing is only the audit trail:
+the reading is counted and logged with its `MessageId`, and then it is gone.
 
 Worth keeping straight: "poison pill" also means a sentinel value deliberately pushed onto
 a queue to tell a consumer to shut down. Same words, opposite intent.

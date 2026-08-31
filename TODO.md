@@ -55,27 +55,41 @@ Fix: a `dotnet build` + `dotnet test` workflow on push. Add `buf lint` and
 `buf breaking --against` for the proto while there — a renumbered field is a wire-compat
 break that no compiler catches.
 
-# TODO: The "Dual Write" Problem
+# NOT DOING (yet): the outbox pattern
 
-Current: the ingestion API validates data and produces to Kafka.
-Risk: if Kafka is down, `ProduceAsync` throws and the reading is gone. The gateway still
-holds it (it only deletes on ACK), so this is less severe than it was — but the failure
-is still at the wrong layer.
+A DUAL WRITE is one request that writes to two stores which cannot be committed together —
+say a row in Postgres and a message in Kafka. Either can succeed while the other fails, and
+then the two disagree with no transaction to roll back.
 
-Fix: Outbox Pattern. Write the telemetry to a local Outbox table in the same transaction,
-then a separate process pushes to Kafka. Note this is the same store-and-forward shape as
-the edge gateway, one layer up — worth saying out loud, because recognising a pattern
-recurring at a different scale is the point.
+The OUTBOX PATTERN turns that into a single write. The request writes its row AND an
+"outbox" row in one database transaction; a separate process reads the outbox afterwards
+and publishes to Kafka. One commit, so the two stores can never disagree about whether the
+thing happened.
 
-# TODO: Dead letter for unsendable edge readings
+`TelemetryService` has no dual write. It writes to exactly one store — Kafka — so there is
+nothing for a shared transaction to make atomic.
 
-Current: `UploaderWorker` drops a reading it cannot serialize, logs it at Error, and
-counts `edge.telemetry.poisoned`. Dropping is what stops one bad row blocking the queue
-forever, since it always sits in the oldest batch.
-Risk: dropped means gone. Same auditability gap as the Kafka side below.
+What I was actually worried about when I wrote this entry is that a Kafka outage leaves the
+ingestion API unable to accept anything. That is real, but it is an AVAILABILITY problem,
+not a consistency one, and the buffer that absorbs it already exists one hop upstream:
+Kafka down means `ProduceAsync` throws, the response names fewer ids, and the gateway keeps
+those rows on disk until it can send them again. An outbox here would put a durable log in
+front of a durable log, insuring against the outage of the component whose entire job is
+being a durable log.
+
+The trigger to revisit: the day this service writes to Postgres AND produces to Kafka in
+the same request. That is a genuine dual write, and the outbox is then the answer.
+
+# TODO: Dead letter for readings the cloud refuses
+
+Current: `UploaderWorker` deletes every id the cloud returns in `rejected_message_ids`,
+logs them at Error, and counts `edge.telemetry.rejected`. Dropping is what stops one
+refused row blocking the queue forever, since it always sits in the oldest batch.
+Risk: dropped means gone, and only the cloud's logs say why it was refused. Same
+auditability gap as the Kafka side below.
 
 Fix: a local `quarantine` table in the same SQLite file, written in the same transaction
-as the delete, holding the row plus the exception.
+as the delete, holding the row so a human can look at what was thrown away.
 
 # TODO: Dead Letter Queue
 

@@ -76,7 +76,7 @@ message TelemetryResponse {
   repeated string accepted_message_ids = 3;
 
   // Readings the cloud will never accept no matter how often they are sent.
-  // The gateway deletes these too and counts them as poison, because a retry cannot help.
+  // The gateway deletes these too and counts edge.telemetry.rejected, a retry cannot help.
   //
   // Naming them here rather than failing the whole call with INVALID_ARGUMENT is what lets
   // the gateway keep sending full batches.

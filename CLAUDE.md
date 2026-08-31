@@ -61,7 +61,7 @@ The mechanism, in order — do not break any link without saying so explicitly:
 
   Ids rather than a count of the batch prefix, because a count can only describe a server
   that stops dead at its first failure, and this one skips an invalid reading and keeps
-  going. That is also what lets the gateway drop a poison record without first resending
+  going. That is also what lets the gateway drop a refused record without first resending
   the batch one reading at a time to find it.
 - **Two unique indexes on `MessageId`, guarding two different hops.** The gateway's
   SQLite index absorbs a retried sensor POST. Postgres's index absorbs a re-sent gateway
@@ -177,7 +177,7 @@ make migrate name=X && make db-update   # EF migrations (Diagnostics.Worker owns
 | `docs/docker.md` | replica identity, why `ReplicaId` is 0-based, Swarm `.Task.Slot`, why N devices per container |
 | `docs/Fintech.md` | industrial→payments mapping, card-network store-and-forward, buffer durability principle |
 | `docs/Bug-AcquisitionCoupling.md` | the acquisition/transmission coupling bug, found at two layers |
-| `docs/UploadFailures.md` | upload outcome classification, which gRPC statuses are permanent, dropping a poison record vs stalling the queue |
+| `docs/UploadFailures.md` | upload outcome classification, which gRPC statuses are permanent, dropping a refused record vs stalling the queue |
 | `docs/Observability.md` | OTel vocabulary, Loki/Prometheus/Tempo, span propagation, gauge sampling |
 | `docs/Concurrency.md` | `Interlocked` vs locks, `lock xadd`, MESI, false sharing, why `_dropped` is shared |
 | `docs/DB/Postgres.md` | heap vs clustered index, pages, B+trees, why `MessageId` is a v7 uuid |

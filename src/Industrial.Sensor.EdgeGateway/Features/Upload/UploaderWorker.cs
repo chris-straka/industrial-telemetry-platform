@@ -103,51 +103,14 @@ public class UploaderWorker(
                     continue;
                 }
 
-                // Draining oldest-first means an unsendable row stalls new readings
-                // I handle it by logging & dropping poisoned rows
-                var batch = new List<OutgoingReading>(pending.Count);
-                var poisoned = new List<TelemetryRecord>();
-
-                foreach (var item in pending)
-                {
-                    try
-                    {
-                        batch.Add(new OutgoingReading(item, ToReading(item)));
-                    }
-                    catch (Exception ex)
-                    {
-                        // Request obj malformed (nulls, range violation)
-                        logger.LogError(
-                            ex,
-                            "Dropping unsendable reading {MessageId} from {EquipmentId}.",
-                            item.MessageId,
-                            item.EquipmentId
-                        );
-                        poisoned.Add(item);
-                    }
-                }
-
-                // Remove poisoned msgs
-                if (poisoned.Count > 0)
-                {
-                    db.TelemetryRecords.RemoveRange(poisoned);
-                    await db.SaveChangesAsync(stoppingToken);
-                    metrics.Poisoned.Add(poisoned.Count);
-                    bufferDepth.Decrement(poisoned.Count);
-                }
-
-                if (batch.Count == 0)
-                    continue;
+                var batch = pending
+                    .Select(item => new OutgoingReading(item, ToReading(item)))
+                    .ToList();
 
                 var result = await UploadBatchAsync(grpcClient, batch, stoppingToken);
 
-                // Reachable means the cloud answered, whatever it answered with
-                // Set here rather than in each arm below, so the four outcomes cannot disagree about it
                 metrics.SetCloudReachable(result.Outcome != UploadOutcome.Unreachable);
 
-                // No default arm on purpose
-                // A fifth outcome should fall through to the delete below and be caught in review
-                // rather than compile into a silent case
                 switch (result.Outcome)
                 {
                     // All three logged themselves, and none leaves anything safe to delete
@@ -157,19 +120,13 @@ public class UploaderWorker(
                         await BackoffAsync(stoppingToken);
                         continue;
 
-                    // The cloud settled none of them, so there is nothing to delete and no reason to hammer it
+                    // The cloud settled none of them
+                    // nothing to delete and no reason to hammer it
                     case UploadOutcome.Answered when result.Settled.Count == 0:
                         await BackoffAsync(stoppingToken);
                         continue;
                 }
 
-                // Delete ONLY what the cloud named, accepted and rejected alike
-                // Accepted is durably the cloud's, rejected will fail identically forever
-                // Anything it named in neither list stays ours and goes out on the next pass
-                //
-                // Matched on MessageId rather than position, so the cloud is free to answer
-                // about a batch in any order it likes
-                // Dying between the ACK and this delete will resend the entire batch (all dupes)
                 var settledRows = batch
                     .Where(p => result.Settled.Contains(p.Record.MessageId))
                     .Select(p => p.Record)
@@ -179,10 +136,8 @@ public class UploaderWorker(
                 await db.SaveChangesAsync(stoppingToken);
 
                 metrics.Uploaded.Add(result.AcceptedIds.Count);
-                metrics.Poisoned.Add(result.RejectedIds.Count);
+                metrics.Rejected.Add(result.RejectedIds.Count);
 
-                // The rows we actually removed, which is what the depth gauge is counting
-                // An id the cloud named twice, or named and we never sent, would inflate a count of the lists
                 bufferDepth.Decrement(settledRows.Count);
 
                 _consecutiveFailures = 0;
@@ -215,8 +170,8 @@ public class UploaderWorker(
             }
             catch (Exception ex)
             {
-                // A bug or a local failure (disk full, corrupt database)
-                // But not the cloud, outages are handled in UploadBatchAsync()
+                // A bug or a local failure (disk full, corrupt DB)
+                // But not the cloud, outages are handled earlier in UploadBatchAsync()
                 logger.LogError(ex, "Unexpected failure in the uploader loop.");
                 await BackoffAsync(stoppingToken);
             }
@@ -245,6 +200,7 @@ public class UploaderWorker(
             [
                 new("edge.batch.size", batch.Count),
                 new("edge.batch.linked_traces", links.Count),
+                new("edge.upload.attempt", _consecutiveFailures + 1),
             ],
             links: links
         );
@@ -313,8 +269,6 @@ public class UploaderWorker(
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             metrics.RecordUploadFailure("unreachable");
 
-            // Log the first failure loudly, then quietly
-            // 30-min outage should not produce 30-mins of identical ERROR lines
             _consecutiveUnreachable++;
 
             if (_consecutiveUnreachable == 1)
@@ -347,13 +301,13 @@ public class UploaderWorker(
     /// Then it fans them all into one trace to send to the cloud
     /// </summary>
     /// <remarks>
-    /// ActivityContext = SpanContext (TraceId, SpanId, TraceFlags, TraceState, IsRemote)
     ///
+    /// ActivityContext = SpanContext = Context (Traceparent, TraceState, IsRemote)
     /// Traceparent = TraceId, SpanId, TraceFlags
+    /// TraceState = 3rd party vendors e.g, Datadog, New Relic
+    /// isRemote = true when the context came from the wire
     ///
-    /// TraceState is for 3rd party vendors like Datadog, New Relic (not relevant 4 me)
-    ///
-    /// Parse would throw for the entire batch unlike TryParse
+    /// Parse() would throw for the entire batch unlike TryParse()
     /// </remarks>
     /// <param name="batch">Split into SQLite rows and sensor readings built from them</param>
     /// <returns>List of links with trace information</returns>
@@ -361,7 +315,6 @@ public class UploaderWorker(
         batch
             .Select(p => p.Record.TraceParent)
             .Where(tp => !string.IsNullOrEmpty(tp))
-            // Remote because these arrived from the sensor over HTTP, they were not made here
             .Select(tp =>
                 ActivityContext.TryParse(tp, null, isRemote: true, out var ctx) ? ctx : default
             )
@@ -412,12 +365,9 @@ public class UploaderWorker(
     /// Exponential backoff with full jitter.
     /// </summary>
     /// <remarks>
-    /// Jittered because every gateway in the fleet fails on the same cadence in an outage
-    /// An unjittered wait reconnects them all at once and knocks the cloud back over
+    /// Jittered otherwise every gateway fails @ the same cadence during an outage
     ///
-    /// Hand-rolled rather than Polly, which the emulator uses one hop down
-    /// The wait is sized by loop state that outlives any one call, and it is entered from three different decisions
-    /// That makes it this component's state machine, not a policy wrapped around a call
+    /// Hand-rolled rather than Polly because the backoff is for loop iterations, not one call
     /// </remarks>
     private async Task BackoffAsync(CancellationToken cancellationToken)
     {
@@ -458,10 +408,10 @@ public class UploaderWorker(
         Refused,
     }
 
-    /// <param name="Outcome">Which of the four ways the call ended.</param>
-    /// <param name="AcceptedIds">Readings the cloud durably holds, safe for us to forget.</param>
-    /// <param name="RejectedIds">Readings the cloud will refuse forever, so we must forget them.</param>
-    /// <param name="Complete">False when the cloud stopped partway, which is why a remainder exists.</param>
+    /// <param name="Outcome">Which way the call ended</param>
+    /// <param name="AcceptedIds">Readings the cloud durably holds</param>
+    /// <param name="RejectedIds">Readings the cloud will refuse forever</param>
+    /// <param name="Complete">False when the cloud stopped partway</param>
     private readonly record struct UploadResult(
         UploadOutcome Outcome,
         IReadOnlyList<string> AcceptedIds,
@@ -469,16 +419,16 @@ public class UploaderWorker(
         bool Complete
     )
     {
-        // Built once here rather than at each of the two places that ask, because the delete
-        // walks the batch and a list lookup would make that quadratic
         public HashSet<string> Settled { get; } = [.. AcceptedIds.Concat(RejectedIds)];
 
-        // The three failure outcomes settle nothing, so they all want this same empty answer
         public static UploadResult Failed(UploadOutcome outcome) =>
             new(outcome, [], [], Complete: false);
     }
 
-    private readonly record struct OutgoingReading(TelemetryRecord Record, TelemetryReading Reading);
+    private readonly record struct OutgoingReading(
+        TelemetryRecord Record,
+        TelemetryReading Reading
+    );
 
     // Task.Delay throws when the token trips, and one caller is the loop's catch block
     // A throw from there escapes ExecuteAsync instead of reaching the shutdown handler

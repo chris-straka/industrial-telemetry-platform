@@ -6,6 +6,21 @@ receivers:
             http:
                 endpoint: "0.0.0.0:4318"
 
+# A pipeline runs receivers -> processors -> exporters. The collector adds nothing here
+# implicitly: a pipeline with no processors listed has none, which is what this file used
+# to be. Batching is recommended on most pipelines rather than supplied by default.
+processors:
+    # Groups spans, metrics and logs before they leave for Tempo/Loki/Prometheus, so the
+    # per-request cost of that hop is paid once per group instead of once per arrival.
+    # The .NET side already batches app -> collector (AddOtlpExporter wraps traces and logs
+    # in a BatchExportProcessor, and metrics go out on a periodic reader), so this is the
+    # SECOND hop, which was still exporting one payload per arrival.
+    #
+    # Defaults are left alone: 8192 items or 200ms, whichever comes first. Tuning them
+    # would be guessing, since this repo has never run long enough under load to know what
+    # its batches actually look like.
+    batch:
+
 exporters:
     prometheus:
         endpoint: "0.0.0.0:8889"
@@ -24,10 +39,13 @@ service:
     pipelines:
         metrics:
             receivers: [otlp]
+            processors: [batch]
             exporters: [prometheus, debug]
         logs:
             receivers: [otlp]
+            processors: [batch]
             exporters: [otlphttp/loki, debug]
         traces:
             receivers: [otlp]
+            processors: [batch]
             exporters: [otlp/tempo, debug]
