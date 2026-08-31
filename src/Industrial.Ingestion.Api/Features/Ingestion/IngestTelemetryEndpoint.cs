@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Confluent.Kafka;
 using FluentValidation;
+using Industrial.Ingestion.Api.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace Industrial.Ingestion.Api.Features.Ingestion;
 
@@ -17,7 +19,9 @@ namespace Industrial.Ingestion.Api.Features.Ingestion;
 ///     the duplicate-write hazard Microsoft warns about with retrying POSTs, and exactly
 ///     why the durable path mints the id at the SENSOR instead.
 ///   - It has no store-and-forward. If Kafka is down, ProduceAsync eventually throws and
-///     the reading is gone. The Outbox pattern in TODO.md is the fix for that.
+///     the reading really is gone -- unlike the gRPC path, where the gateway still holds
+///     the row on disk and sends it again. Acceptable for a debugging door and nowhere
+///     else, which is why real sensors do not come through here.
 ///
 /// Real sensors go through the Edge Gateway and arrive over gRPC (TelemetryService.cs).
 /// </remarks>
@@ -31,6 +35,14 @@ public record TelemetryDto(
     DateTimeOffset? OccurredAt = null
 );
 
+/// <summary>
+/// What the REST door requires, deliberately stricter than TelemetryReadingValidator.
+/// </summary>
+/// <remarks>
+/// Failing a rule means opposite things on the two paths. Here it is a 400 to someone typing
+/// a curl, who fixes the number. On the gRPC path the gateway deletes the reading, so a
+/// temperature range would discard the out-of-range readings the anomaly detector wants.
+/// </remarks>
 public class TelemetryValidator : AbstractValidator<TelemetryDto>
 {
     public TelemetryValidator()
@@ -49,7 +61,8 @@ public static class IngestTelemetryEndpoint
             async (
                 TelemetryDto request,
                 IValidator<TelemetryDto> validator,
-                IProducer<string, string> kafkaProducer
+                IProducer<string, string> kafkaProducer,
+                IOptions<KafkaOptions> kafkaOptions
             ) =>
             {
                 var validationResult = await validator.ValidateAsync(request);
@@ -85,7 +98,7 @@ public static class IngestTelemetryEndpoint
                 // If Kafka is booting, this Task completes once the producer's internal
                 // retry logic succeeds. If Kafka is genuinely down it throws, and this
                 // endpoint has nowhere to put the reading -- see the remarks above.
-                await kafkaProducer.ProduceAsync("telemetry-events", message);
+                await kafkaProducer.ProduceAsync(kafkaOptions.Value.EventsTopic, message);
 
                 return Results.Accepted();
             }

@@ -55,11 +55,11 @@ public class TelemetryConsumerWorker(
         };
 
         using var consumer = new ConsumerBuilder<Ignore, string>(config).Build();
-        consumer.Subscribe(kafka.TopicName);
+        consumer.Subscribe(kafka.EventsTopic);
 
         logger.LogInformation(
             "Subscribed to Kafka topic {Topic} on {Servers}",
-            kafka.TopicName,
+            kafka.EventsTopic,
             kafka.BootstrapServers
         );
 
@@ -218,6 +218,6 @@ public class TelemetryConsumerWorker(
                 }
             ),
         };
-        await producer.ProduceAsync("telemetry-alerts", alert, ct);
+        await producer.ProduceAsync(kafkaOptions.Value.AlertsTopic, alert, ct);
     }
 }

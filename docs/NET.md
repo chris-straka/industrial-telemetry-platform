@@ -6,6 +6,41 @@ new in .NET 6 is IMPLICIT USINGS, which is why this particular .g.cs exists at a
 [security](https://learn.microsoft.com/en-us/aspnet/core/security/?view=aspnetcore-10.0)
 [performance](https://learn.microsoft.com/en-us/aspnet/core/performance/overview?view=aspnetcore-10.0)
 
+# Registration: explicit list vs classpath scan
+
+.NET registers every dependency up front, as ordinary statements against
+`builder.Services`. The container knows exactly what those lines put in it and nothing
+else. Spring inverts that: a class declares itself with `@Component`, `@Service` or
+`@Repository`, `@ComponentScan` walks the packages at startup collecting them, and
+`@Autowired` resolves by type at the injection site.
+
+Four things follow from the difference.
+
+**Finding what is registered.** Here you read `Program.cs` top to bottom and you have the
+whole answer. In Spring the answer is spread across every annotated class and depends on
+which packages the scan covers, so a bean that is not picked up looks identical to one
+that was never written.
+
+**When a mistake surfaces.** A missing .NET registration throws `InvalidOperationException`
+at the first resolve, which for a scoped service means the first request that needs it.
+Spring fails the whole context at startup with `NoSuchBeanDefinitionException`. Spring's is
+the better failure -- earlier and total. .NET can be pushed toward it with
+`ValidateOnBuild`, and `ValidateOnStart` on options is the same instinct applied to config.
+
+**Ambiguity.** Two implementations of one interface is a `NoUniqueBeanDefinitionException`
+in Spring until you add `@Primary` or `@Qualifier`. .NET has no error: the last
+registration wins for a single resolve, and asking for `IEnumerable<T>` hands you all of
+them in registration order. Quieter, and quiet is not always better.
+
+**Conditional wiring.** Spring needs framework concepts for this -- `@Profile`,
+`@ConditionalOnProperty`. Registration here is just code, so a plain `if` over
+`builder.Environment` does it, and a loop can register a family of services with nothing
+new to learn.
+
+The trade is typing against readability. Spring's annotations scale to hundreds of beans
+without a correspondingly huge configuration file; .NET's list stays one ordered thing you
+can read, which is worth more on a codebase this size than the lines it costs.
+
 # DI lifetimes
 
 A DI lifetime defines how long a registered service instance lives and when the DI
@@ -303,6 +338,30 @@ disposal also happens to be a no-op, but that is a separate fact.) Reaching for 
 
 A TYPED client is different: `T` IS resolved from the container, so if `T` is `IDisposable`
 it gets tracked like anything else.
+
+# Where a config value comes from
+
+`WebApplication.CreateBuilder` stacks five sources. Later ones win on a key collision:
+
+1. `appsettings.json`
+2. `appsettings.{Environment}.json`
+3. user secrets (Development only)
+4. environment variables
+5. command line arguments
+
+That order is why `docker-compose.yaml` can override anything in `appsettings.json`
+without editing it: the compose `environment:` block is layer 4 and the file is layer 1.
+
+An environment variable name cannot contain a colon on Linux, so .NET rewrites a double
+underscore into one when it reads the variable. `Kafka__BootstrapServers` in compose is
+`Kafka:BootstrapServers` by the time configuration is queried, which is why every key in
+this repo is READ with a colon and WRITTEN with underscores. Reading the underscore form
+returns null, silently -- it is a key nobody set.
+
+The layering is also what makes this repo's "no fallback defaults" rule enforceable. Since
+`appsettings.json` is a layer rather than a set of defaults applied when a key is missing,
+a key absent from every layer binds to `default` and the `[Required]` attribute on the
+options class fails at boot. See `# Fail at boot vs fail after boot` below.
 
 # Configuration: the empty-string hole
 

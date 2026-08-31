@@ -2,7 +2,8 @@
   "diagnostics-worker" (dict "env" (list
     (dict "name" "ConnectionStrings__DefaultConnection" "value" $.Values.dbConnection)
     (dict "name" "Kafka__GroupId" "value" "diagnostics-group")
-    (dict "name" "Kafka__TopicName" "value" "telemetry-events")
+    (dict "name" "Kafka__EventsTopic" "value" "telemetry-events")
+    (dict "name" "Kafka__AlertsTopic" "value" "telemetry-alerts")
     (dict "name" "Gemini__ApiKey" "valueFrom" (dict "secretKeyRef" (dict "name" "api-secrets" "key" "gemini")))
   ))
   "sensor-emulator" (dict "env" (list
@@ -59,7 +60,8 @@ spec:
   "diagnostics-worker" (dict "env" (list
     (dict "name" "DB__ConnectionString" "value" $.Values.dbConnection)
     (dict "name" "Kafka__GroupId" "value" "diagnostics-group")
-    (dict "name" "Kafka__TopicName" "value" "telemetry-events")
+    (dict "name" "Kafka__EventsTopic" "value" "telemetry-events")
+    (dict "name" "Kafka__AlertsTopic" "value" "telemetry-alerts")
     (dict "name" "Gemini__ApiKey" "valueFrom" (dict "secretKeyRef" (dict "name" "api-secrets" "key" "gemini")))
   ))
   "sensor-emulator" (dict "env" (list

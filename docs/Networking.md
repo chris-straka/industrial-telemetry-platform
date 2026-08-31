@@ -136,6 +136,44 @@ gRPC does NOT give you exactly-once.
 If a stream dies after the server committed but before the ACK arrives, you still don't know.
 Persistent queue + IDs + acknowledgement + dedupe is what solves it.
 
+# Unary vs streaming is a call shape, not a transport
+
+Every gRPC call is already an HTTP/2 stream.
+Unary is not "the non-streaming one": it is a stream on which exactly one message is allowed in each direction.
+The bytes are framed identically either way -- length-prefixed protobuf messages -- so the four shapes are only rules about HOW MANY messages each side may put on the stream.
+
+| shape | client sends | server sends |
+| --- | --- | --- |
+| unary | 1 | 1 |
+| server streaming | 1 | N |
+| client streaming | N | 1 |
+| bidirectional | N | N |
+
+Nothing below the gRPC layer changes when you pick a different one.
+Same connection, same protocol, same framing.
+Calling that a change of transport is wrong and it hides where the real trade is.
+
+`UploadTelemetry` is unary, carrying a `repeated TelemetryReading` field.
+
+**Rejected: client streaming**, one message per reading on one open stream.
+It is NOT slower in round trips -- the client fires all 200 messages without waiting for a reply between them, so both shapes are one round trip.
+What it buys is the removal of the 4 MB per-message ceiling, because the limit applies per message and each message would hold one reading.
+What it costs is an async enumerable on both ends instead of a method that takes a list.
+
+That ceiling is the only thing streaming would relieve here, and this batch never approaches it.
+`Uploader:BatchSize` is 200 and validates to at most 10,000; the ceiling sits near 50,000.
+Paying real code complexity to lift a limit four times above the configurable maximum is not a trade.
+
+> Streaming IS right for sensor data. Just not on this hop.
+
+A device holding a connection open and pushing readings the instant it measures them is the textbook streaming case, and bidirectional with a per-reading ACK would be the better shape for it.
+
+The uploader does not do that.
+It wakes up, selects 200 rows, sends them, deletes what settled, and sleeps.
+The readings already happened and are already on disk -- there is no live flow to hold a connection open for, only a pile of rows at rest to move.
+
+Sensor -> gateway is a live feed. Gateway -> cloud is a batch drain. The call shape follows the job.
+
 # Why a batch and not one reading per call
 
 Batching is sized by outage recovery, not by steady state.
@@ -191,6 +229,76 @@ is killed during a long outage, losing everything already buffered rather than o
 newest reading.
 
 See Fintech.md for why this table inverts when the item is a payment.
+
+# The durability handoff
+
+> A component may delete its copy only once something that survives a restart holds it.
+
+This is the rule the whole store-and-forward path is built on, and it is why `UploadTelemetry`
+answers when it does.
+
+`TelemetryResponse` is not a receipt. It is a TRANSFER OF CUSTODY.
+The gateway deletes the SQLite row for every id the cloud names, so an id in `accepted_message_ids`
+is a claim that the reading is now somebody else's problem.
+Claiming that before it is true loses the reading permanently: the gateway has already forgotten it,
+and the only other copy was a local variable in a process that just died.
+
+The chain is a sequence of custody transfers, and each hop releases only after the next one commits.
+
+| holder | how it survives | releases when |
+| --- | --- | --- |
+| sensor | nothing -- RAM | the gateway returns 202 |
+| gateway | SQLite WAL, `synchronous=FULL` | the cloud names the id in a response |
+| Kafka | replicated partition log | retention expires, long after the worker has consumed |
+| Postgres | the system of record | never |
+
+Note what the ingestion API is NOT in that table.
+It has no store of its own -- no disk, no queue, nothing that outlives the method call.
+So it cannot take custody, and the only thing it can honestly do is hold the gateway's call open until
+Kafka has taken custody instead. That is exactly what this line does:
+
+```csharp
+await kafkaProducer.ProduceAsync(...);
+accepted.Add(reading.MessageId);
+```
+
+`ProduceAsync` does not complete when the message is sent. It completes when the broker acknowledges it.
+The `await` IS the handoff, and recording the id afterwards is what keeps `accepted` a list of durable
+writes rather than a list of attempts.
+
+That makes `Acks` load-bearing. At `acks=0` the task would complete on send and the whole guarantee
+collapses into a lie. librdkafka defaults it to all, so this currently holds by inheritance rather than
+by decision -- which is precisely the situation the "no fallback defaults" rule in CLAUDE.md exists to
+prevent. Set it explicitly.
+
+> Why 202 is the wrong verb here
+
+`202 Accepted` means "I have taken responsibility for doing this later, no promises."
+That is a fine answer to a caller that keeps its own copy, which is why the gateway's receiver returns it
+to the sensor -- the gateway really has committed to disk by then, and the sensor was never going to
+retain anything anyway.
+
+It is the wrong answer to a caller that DELETES on it.
+A gateway acting on 202 would be discarding data on a promise instead of on a fact.
+`UploadTelemetry` is semantically a 200: this happened.
+
+**Rejected: giving the ingestion API a durable buffer of its own**, so it could accept while Kafka is down.
+That is store-and-forward one layer up, and it would work.
+It loses because the buffer that absorbs a Kafka outage already exists one hop upstream, on a device
+that survives power loss: Kafka down means `ProduceAsync` throws, fewer ids come back, and the gateway
+simply keeps those rows. Adding another durable log in front of a durable log insures against the outage
+of the one component whose entire job is being a durable log.
+See TODO.md for why this is also not the "dual write" problem it was first filed as.
+
+> Durability comes before batching, never after
+
+Batching trades latency for throughput: reading 1 waits for reading 200 before anything is sent.
+That trade is only acceptable while reading 1 is already safe.
+Buffer in RAM and batch from there, and you have converted "one request per reading is expensive" into
+"a crash loses 200 readings", which is a far worse problem than the one you set out to solve.
+
+The gateway gets this order right: fsync to SQLite, ACK the sensor, and only then let the uploader batch
+from disk. Reverse those two and the batching is what destroys the data.
 
 # Transport vs payload
 

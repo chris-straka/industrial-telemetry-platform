@@ -80,6 +80,23 @@ being a durable log.
 The trigger to revisit: the day this service writes to Postgres AND produces to Kafka in
 the same request. That is a genuine dual write, and the outbox is then the answer.
 
+# TODO: Health endpoints on everything but the gateway
+
+Current: only `Industrial.Sensor.EdgeGateway` maps `/health`, and it is the only one of the
+three .NET services compose gives a `healthcheck:`. `Ingestion.Api`, `Web.Api` and
+`Diagnostics.Worker` expose nothing, so `chart/` has nothing to put in a readinessProbe and
+k8s would route traffic to an ingestion pod whose Kafka producer never connected.
+
+Fix: `AddHealthChecks()` plus `MapHealthChecks("/health")` on all three. None needs a new
+listener -- `Diagnostics.Worker` is already a `.Web` project, which is the other half of
+"Diagnostics.Worker is a .Web project that serves nothing" below. Solve them together: the
+probe is what makes that SDK choice honest.
+
+Worth copying from the gateway: its `/health` is a constant on purpose, so an unreachable
+cloud never marks the container unhealthy. A liveness probe answers "should this process be
+killed", and a gateway that cannot reach the cloud is doing exactly its job. Readiness is
+the probe where a dependency belongs, and the two are different questions.
+
 # TODO: Dead letter for readings the cloud refuses
 
 Current: `UploaderWorker` deletes every id the cloud returns in `rejected_message_ids`,
@@ -163,9 +180,9 @@ Risk: mild, but it also means k8s has no liveness/readiness probe to hit, and th
 Helm chart in `chart/` that would want one.
 
 Fix: keep `.Web` and add `/health` (plus `/health/ready` gated on the Kafka consumer
-actually being assigned partitions). That makes the SDK choice honest AND gives Istio
-something to route on. The alternative — switching it to `.Worker` — is worse here,
-precisely because the probe is genuinely wanted.
+actually being assigned partitions), as part of the health endpoint entry above. That makes
+the SDK choice honest AND gives Istio something to route on. The alternative — switching it
+to `.Worker` — is worse here, precisely because the probe is genuinely wanted.
 
 # TODO: The Helm chart predates the edge gateway
 

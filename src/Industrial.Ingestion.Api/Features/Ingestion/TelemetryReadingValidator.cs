@@ -1,4 +1,5 @@
 using FluentValidation;
+using Google.Protobuf.WellKnownTypes;
 
 namespace Industrial.Ingestion.Api.Features.Ingestion;
 
@@ -16,6 +17,17 @@ namespace Industrial.Ingestion.Api.Features.Ingestion;
 /// </remarks>
 public class TelemetryReadingValidator : AbstractValidator<TelemetryReading>
 {
+    // Read off the conversion rather than written as literals, so they cannot drift from it
+    private static readonly long MinSeconds = Timestamp
+        .FromDateTimeOffset(DateTimeOffset.MinValue)
+        .Seconds;
+
+    private static readonly long MaxSeconds = Timestamp
+        .FromDateTimeOffset(DateTimeOffset.MaxValue)
+        .Seconds;
+
+    private const int NanosPerSecond = 1_000_000_000;
+
     public TelemetryReadingValidator()
     {
         // Without the idempotency key the consumer cannot dedupe, so a Kafka redelivery would
@@ -30,9 +42,22 @@ public class TelemetryReadingValidator : AbstractValidator<TelemetryReading>
         // MAX(sequence_number) = COUNT(*) per device. A zero raises the count without the max.
         RuleFor(x => x.SequenceNumber).GreaterThan(0);
 
-        // Unset in proto3 means a null message, and ToDateTimeOffset() throws on it.
-        // Rejecting it here turns a NullReferenceException that faults the whole batch into one
-        // named reading the gateway can drop.
-        RuleFor(x => x.OccurredAt).NotNull();
+        RuleFor(x => x.OccurredAt)
+            // Unset in proto3 means a null message, and ToDateTimeOffset() throws on it.
+            .NotNull()
+            // A broken clock can send a seconds count no DateTimeOffset holds. Unchecked it
+            // throws past this validator, reads as a fault, and the gateway resends it forever
+            // Representable range only, since "within a day of now" would delete skewed readings
+            .Must(IsRepresentable)
+            .WithMessage("OccurredAt is outside the range google.protobuf.Timestamp can hold.");
     }
+
+    // Null passes because NotNull already reported it and FluentValidation runs the chain anyway
+    private static bool IsRepresentable(Timestamp? occurredAt) =>
+        occurredAt is null
+        || (
+            occurredAt.Seconds >= MinSeconds
+            && occurredAt.Seconds <= MaxSeconds
+            && occurredAt.Nanos is >= 0 and < NanosPerSecond
+        );
 }

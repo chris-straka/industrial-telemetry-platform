@@ -2,6 +2,8 @@ using System.Text.Json;
 using Confluent.Kafka;
 using FluentValidation;
 using Grpc.Core;
+using Industrial.Ingestion.Api.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace Industrial.Ingestion.Api.Features.Ingestion;
 
@@ -12,9 +14,12 @@ namespace Industrial.Ingestion.Api.Features.Ingestion;
 public class TelemetryService(
     IProducer<string, string> kafkaProducer,
     IValidator<TelemetryReading> validator,
+    IOptions<KafkaOptions> kafkaOptions,
     ILogger<TelemetryService> logger
 ) : TelemetryIngestion.TelemetryIngestionBase
 {
+    private readonly string _topic = kafkaOptions.Value.EventsTopic;
+
     public override async Task<TelemetryResponse> UploadTelemetry(
         UploadTelemetryRequest request,
         ServerCallContext context
@@ -28,35 +33,41 @@ public class TelemetryService(
         var accepted = new List<string>(request.Readings.Count);
         var rejected = new List<string>();
 
-        // An infrastructure fault stops the batch where it stands. The readings after it are
-        // untouched rather than skipped, so they keep their place in the gateway's queue and
-        // stay in order behind the one that failed.
+        // A broker fault stops the batch, because the produce after it fails the same way
+        // Readings we never reach go unnamed, which is how the gateway is told to keep them
         var faulted = false;
 
-        try
+        // Launched before any is awaited, so librdkafka fills one broker request with the batch
+        // Awaiting each in turn holds its queue at one message, a round trip and a linger per read
+        // Produce() with a delivery callback is faster still, but callback-shaped for no gain here
+        var inflight = new List<(string MessageId, Task<DeliveryResult<string, string>> Delivery)>(
+            request.Readings.Count
+        );
+
+        foreach (var reading in request.Readings)
         {
-            foreach (var reading in request.Readings)
+            var validation = validator.Validate(reading);
+
+            if (!validation.IsValid)
             {
-                var validation = validator.Validate(reading);
+                // Logged with the reasons, because this is the only side that knows them:
+                // the gateway is told which readings we refused, never why.
+                logger.LogWarning(
+                    "Rejecting reading {MessageId} from {EquipmentId}: {Errors}.",
+                    reading.MessageId,
+                    reading.EquipmentId,
+                    string.Join("; ", validation.Errors.Select(e => e.ErrorMessage))
+                );
 
-                if (!validation.IsValid)
-                {
-                    // Logged with the reasons, because this is the only side that knows them:
-                    // the gateway is told which readings we refused, never why.
-                    logger.LogWarning(
-                        "Rejecting reading {MessageId} from {EquipmentId}: {Errors}.",
-                        reading.MessageId,
-                        reading.EquipmentId,
-                        string.Join("; ", validation.Errors.Select(e => e.ErrorMessage))
-                    );
+                // An empty MessageId names nothing the gateway can match, so it would hold
+                // the reading forever. Its receiver answers 400 to a reading without one,
+                // which is what keeps such a row out of the buffer in the first place.
+                rejected.Add(reading.MessageId);
+                continue;
+            }
 
-                    // An empty MessageId names nothing the gateway can match, so it would hold
-                    // the reading forever. Its receiver answers 400 to a reading without one,
-                    // which is what keeps such a row out of the buffer in the first place.
-                    rejected.Add(reading.MessageId);
-                    continue;
-                }
-
+            try
+            {
                 var payload = new
                 {
                     reading.MessageId, // idempotency key -- the consumer dedupes on this
@@ -82,26 +93,77 @@ public class TelemetryService(
                     Value = JsonSerializer.Serialize(payload),
                 };
 
-                // ProduceAsync completes only once the broker acknowledges, so recording the
-                // id after the await means this list holds DURABLE writes, not enqueued ones.
-                // That is the whole basis of the gateway's delete.
-                await kafkaProducer.ProduceAsync(
-                    "telemetry-events",
-                    message,
-                    context.CancellationToken
+                inflight.Add(
+                    (
+                        reading.MessageId,
+                        kafkaProducer.ProduceAsync(_topic, message, context.CancellationToken)
+                    )
                 );
-                accepted.Add(reading.MessageId);
+            }
+            catch (KafkaException ex)
+            {
+                // The broker or the local queue, not this reading (ProduceException derives from it)
+                faulted = true;
+                logger.LogError(
+                    ex,
+                    "Batch stopped at reading {MessageId}. Gateway will retry the remainder.",
+                    reading.MessageId
+                );
+                break;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Deterministic for this reading, so it fails the same way on every resend
+                // Refusing it is the only answer that does not stall the queue behind it
+                logger.LogError(
+                    ex,
+                    "Rejecting reading {MessageId} from {EquipmentId}: it cannot be produced.",
+                    reading.MessageId,
+                    reading.EquipmentId
+                );
+                rejected.Add(reading.MessageId);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+
+        try
         {
-            // Partial acceptance. Report what we durably took and let the gateway
-            // retry the rest; it still holds every record we did not confirm.
+            await Task.WhenAll(inflight.Select(x => x.Delivery));
+        }
+        catch
+        {
+            // WhenAll rethrows one exception and never says which message it belonged to
+            // The await is still what finishes the produces, only its throw is unusable
+        }
+
+        // Our own shutdown cancelled the deliveries rather than the broker failing them.
+        context.CancellationToken.ThrowIfCancellationRequested();
+
+        var undelivered = 0;
+        Exception? firstFailure = null;
+
+        foreach (var (messageId, delivery) in inflight)
+        {
+            // A task completes only once the broker acknowledged, so these are DURABLE writes
+            // rather than enqueued ones, which is the whole basis of the gateway's delete
+            if (delivery.IsCompletedSuccessfully)
+            {
+                accepted.Add(messageId);
+                continue;
+            }
+
             faulted = true;
+            undelivered++;
+            firstFailure ??= delivery.Exception?.GetBaseException();
+        }
+
+        // One line with a count, because an outage fails all 200 and buries the log
+        if (undelivered > 0)
+        {
             logger.LogError(
-                ex,
-                "Batch faulted after {Accepted} accepted readings. Gateway will retry the remainder.",
-                accepted.Count
+                firstFailure,
+                "{Undelivered} of {Inflight} deliveries failed. Gateway will send them again.",
+                undelivered,
+                inflight.Count
             );
         }
 

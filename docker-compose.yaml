@@ -50,6 +50,7 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - Kafka__BootstrapServers=kafka:9092
+      - Kafka__EventsTopic=telemetry-events
       - OTel__ServiceName=Industrial.Ingestion.Api
       - OTel__Endpoint=http://otel-collector:4317
     depends_on:
@@ -100,7 +101,8 @@ services:
       - Gemini__ApiKey=${GEMINI_API_KEY}
       - Kafka__BootstrapServers=kafka:9092
       - Kafka__GroupId=diagnostics-group
-      - Kafka__TopicName=telemetry-events
+      - Kafka__EventsTopic=telemetry-events
+      - Kafka__AlertsTopic=telemetry-alerts
       - OTel__ServiceName=Industrial.Diagnostics.Worker
       - OTel__Endpoint=http://otel-collector:4317
     depends_on:

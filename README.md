@@ -10,35 +10,34 @@ when it ends. `make verify` measures the result: zero lost, zero duplicated.
 # Data flow
 
 ```
-                    sensor-emulator
-                    (N fake devices, mints MessageId + OccurredAt)
+sensor-emulator (N devices, mints MessageId + OccurredAt)
                           │ HTTP/JSON, LAN
                           ▼
-   ┌─────────────────── edge-gateway ───────────────────┐
-   │  receiver ──► SQLite (WAL, fsync per commit)       │
-   │                    │                               │
-   │                    ▼                               │
-   │              uploader ──► oldest-first, batched    │
-   │                                                    │
+   ┌─────────────────── edge-gateway ────────────────────┐
+   │  receiver ──► SQLite (WAL, fsync per commit)        │
+   │                    │                                │
+   │                    ▼                                │
+   │              uploader ──► oldest-first, batched     │
+   │                                                     │
    │  + bounded buffer w/ 429 + Retry-After backpressure │
-   │  + exponential backoff w/ jitter                   │
-   │  + OTel: queue depth, oldest message age           │
-   └────────────────────┬───────────────────────────────┘
-                        │ gRPC client-stream (HTTP/2), WAN
-                        ▼
-                    ingestion-api
-                        │ produces to Kafka: telemetry-events
-                        ▼
-   ┌───────────────────── Kafka ──────────────┐
-   │                      ▲                   │
-   ▼                      │                   ▼
-diagnostics-worker        │                web-api
- ├─ dedupes on MessageId  │                 ├─ consumes telemetry-events
- ├─ ML.NET anomaly check  │                 ├─ consumes telemetry-alerts
- ├─ saves to Postgres     │                 └─ relays live data via SignalR
- ├─ calls Gemini          │                              │
- └─ produces alerts ──────┘                              ▼
-                                                   web-dashboard
+   │  + exponential backoff w/ jitter                    │
+   │  + OTel: queue depth, oldest message age            │
+   └────────────────────────┬────────────────────────────┘
+                            │ gRPC unary, 200 readings a call (HTTP/2), WAN
+                            ▼
+                        ingestion-api
+                            │ produces telemetry-events, keyed by EquipmentId
+                            ▼
+   ┌───────────────────── Kafka ───────────────────────┐
+   │                        ▲                          │
+   ▼                        │                          ▼
+diagnostics-worker          │                      web-api
+ ├─ dedupes on MessageId    │                       ├─ consumes telemetry-events
+ ├─ ML.NET anomaly check    │                       ├─ consumes telemetry-alerts
+ ├─ saves to Postgres       │                       └─ relays live data via SignalR
+ ├─ calls Gemini            │                                  │
+ └─ produces alerts ────────┘                                  ▼
+                                                         web-dashboard
 ```
 
 # Delivery guarantees

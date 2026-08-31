@@ -171,7 +171,7 @@ make migrate name=X && make db-update   # EF migrations (Diagnostics.Worker owns
 | file | covers |
 | --- | --- |
 | `docs/Networking.md` | HttpClient pooling, thundering herd, HOL blocking, HTTP/1.1→3, why batches, buffer durability |
-| `docs/NET.md` | project SDKs, `FrameworkReference`, `IHttpClientFactory` internals, config gotchas |
+| `docs/NET.md` | project SDKs, `FrameworkReference`, `IHttpClientFactory` internals, DI registration vs Spring, config layers and gotchas |
 | `docs/Kafka.md` | brokers, partitions, offsets, delivery semantics, poison messages |
 | `docs/Kubernetes.md` | Deployment vs StatefulSet, PVCs, ordered rollout |
 | `docs/docker.md` | replica identity, why `ReplicaId` is 0-based, Swarm `.Task.Slot`, why N devices per container |
