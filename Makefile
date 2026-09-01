@@ -120,13 +120,9 @@ chaos-gateway-kill: ## restart the gateway mid-outage; the buffer survives
 queue: ## current edge buffer depth
 	@curl -s http://localhost:5272/buffer | python3 -m json.tool
 
-# The end-to-end proof. Three numbers that have to hold:
-#   duplicates = 0   -- the unique index on MessageId did its job
-#   missing    = 0   -- no gaps in the per-device sequence, so nothing was lost
-#   max lag          -- how far behind event time we fell during the outage
-# The end-to-end proof. SQL lives in scripts/verify.sql so it stays readable
-# (backslash line-continuations do NOT work inside single quotes in shell, so
-# inlining multi-line SQL in a recipe silently ships literal backslashes to psql).
+# The end-to-end proof. SQL lives in scripts/verify.sql so it stays readable (backslash
+# line-continuations do NOT work inside single quotes in shell, so inlining multi-line
+# SQL in a recipe silently ships literal backslashes to psql).
 verify: ## duplicates = 0, missing = 0, end-to-end lag
 	@docker exec -i industrialplatform-postgres-1 psql -U admin -d industrial_db -q < scripts/verify.sql
 

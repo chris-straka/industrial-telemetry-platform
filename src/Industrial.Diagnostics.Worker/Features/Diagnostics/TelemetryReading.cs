@@ -28,10 +28,7 @@ public class TelemetryReading
 
     /// <summary>
     /// Monotonic per EquipmentId, assigned by the sensor. Lets you prove nothing was
-    /// LOST as well as nothing duplicated:
-    ///   SELECT "EquipmentId", MAX("SequenceNumber") + 1 - COUNT(*) AS missing
-    ///   FROM "TelemetryReadings" GROUP BY "EquipmentId";
-    /// A row of zeroes is the end-to-end result the whole demo is built to produce.
+    /// LOST as well as nothing duplicated.
     /// </summary>
     public long SequenceNumber { get; set; }
 

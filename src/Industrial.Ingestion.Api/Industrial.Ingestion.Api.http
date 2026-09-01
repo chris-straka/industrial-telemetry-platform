@@ -6,11 +6,7 @@
 ### Omit MessageId and the server generates one, which means re-sending this request
 ### creates a SECOND reading. Supply your own and re-sending is a no-op, because the
 ### worker dedupes on it.
-###
-### Use a MANUAL- equipment id. This path sends SequenceNumber 0, and scripts/verify.sql
-### proves no data was lost by checking max_seq = COUNT(*) per device -- a seq-less row
-### on a real EQ- id breaks that arithmetic, so verify.sql skips MANUAL-%.
-POST {{ApiHostAddr}}/api/telemetry
+POST {{ApiHostAddr}}/api/debug/telemetry
 Content-Type: application/json
 
 {

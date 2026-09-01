@@ -10,7 +10,7 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
-// ---------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------
 // Sits between sensors and the cloud and makes sure sensor readings are never lost
 // Even when the cloud, network, or this process dies.
 //
@@ -20,7 +20,7 @@ using OpenTelemetry.Trace;
 //
 // We send the sensor 202 the moment the reading is on local disk (not on cloud).
 // This decoupling allows the sensor to produce through a cloud outage.
-// ---------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -80,7 +80,8 @@ builder
     .WithTracing(t =>
         t.AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation()
-            .AddSource(EdgeTracing.SourceName) // my spans
+            // upload loop is bg work, autoinstrumentation can't trace it, need 2 add my own
+            .AddSource(EdgeTracing.SourceName)
             .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     );
 
@@ -113,7 +114,6 @@ using (var scope = app.Services.CreateScope())
     if (buffered > 0)
     {
         // Anything still left in the DB was written by a previous run (proof of durability)
-        // This proves its durability (gateway dies during a cloud outage, readings remain)
         app.Logger.LogInformation(
             "Recovered {Count} unsent readings from the local buffer at {Path}.",
             buffered,

@@ -4,55 +4,52 @@ using Google.Protobuf.WellKnownTypes;
 namespace Industrial.Ingestion.Api.Features.Ingestion;
 
 /// <summary>
-/// What the cloud requires of a reading before it will produce it to Kafka.
+/// What the cloud requires of a reading before it produces to Kafka.
 /// </summary>
 /// <remarks>
-/// Every rule here has to be one no retry can fix, because a reading that fails is named in
-/// TelemetryResponse.rejected_message_ids and the gateway then deletes it.
-/// A transient condition belongs in the catch around ProduceAsync instead, which leaves the
-/// reading in the gateway's buffer.
-///
-/// FluentValidation rather than checks inline in the produce loop, because the REST door
-/// already validates through it and one mechanism means one place to read the cloud's rules.
+/// Every rule must be something no retry can fix (failures here delete the reading)
 /// </remarks>
 public class TelemetryReadingValidator : AbstractValidator<TelemetryReading>
 {
-    // Read off the conversion rather than written as literals, so they cannot drift from it
     private static readonly long MinSeconds = Timestamp
         .FromDateTimeOffset(DateTimeOffset.MinValue)
         .Seconds;
-
     private static readonly long MaxSeconds = Timestamp
         .FromDateTimeOffset(DateTimeOffset.MaxValue)
         .Seconds;
 
     private const int NanosPerSecond = 1_000_000_000;
 
+    // proto3 defaults are either 0 or null
     public TelemetryReadingValidator()
     {
-        // Without the idempotency key the consumer cannot dedupe, so a Kafka redelivery would
-        // land twice in Postgres and break the duplicates = 0 invariant.
-        RuleFor(x => x.MessageId).NotEmpty();
+        // Diagnostics.Worker dedupes on this too
+        RuleFor(x => x.MessageId)
+            .NotEmpty()
+            .Must(id => Guid.TryParse(id, out _))
+            .WithMessage("MessageId is not a GUID, so Diagnostics.Worker cannot dedupe on it.");
 
-        // The Kafka message key. An empty one spreads a device's readings across partitions and
-        // loses their relative order.
+        // The Kafka message key (used for partitions)
         RuleFor(x => x.EquipmentId).NotEmpty();
 
-        // Sensors count from 1, and verify.sql proves nothing was lost by asserting
-        // MAX(sequence_number) = COUNT(*) per device. A zero raises the count without the max.
+        // 0 should not be possible (sensors count from 1)
         RuleFor(x => x.SequenceNumber).GreaterThan(0);
 
+        RuleFor(x => x.EngineTemperature)
+            .Must(double.IsFinite)
+            .WithMessage("EngineTemperature is NaN or infinite.");
+
+        RuleFor(x => x.OilPressure)
+            .Must(double.IsFinite)
+            .WithMessage("OilPressure is NaN or infinite.");
+
         RuleFor(x => x.OccurredAt)
-            // Unset in proto3 means a null message, and ToDateTimeOffset() throws on it.
             .NotNull()
-            // A broken clock can send a seconds count no DateTimeOffset holds. Unchecked it
-            // throws past this validator, reads as a fault, and the gateway resends it forever
-            // Representable range only, since "within a day of now" would delete skewed readings
             .Must(IsRepresentable)
             .WithMessage("OccurredAt is outside the range google.protobuf.Timestamp can hold.");
     }
 
-    // Null passes because NotNull already reported it and FluentValidation runs the chain anyway
+    // Filters out values from a broken clock
     private static bool IsRepresentable(Timestamp? occurredAt) =>
         occurredAt is null
         || (

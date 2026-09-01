@@ -1,14 +1,14 @@
 using Confluent.Kafka;
 using FluentValidation;
-using Industrial.Shared;
 using Industrial.Ingestion.Api.Configuration;
 using Industrial.Ingestion.Api.Features.Ingestion;
+using Industrial.Shared;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
-// ---------------------------------------------------------------------------------
+// --------------------------------------------------------------------------
 // The cloud end of the store-and-forward path.
 //
 //   ┌──────────────┐   200 readings, one call ┌───────────────┐
@@ -28,8 +28,8 @@ using OpenTelemetry.Trace;
 //   rejected   this service's validator refused it, so Kafka never saw it
 //   neither    still the gateway's, and it sends it again
 //
-// POST /api/telemetry is a debugging door onto the same topic.
-// ---------------------------------------------------------------------------------
+// POST /api/debug/telemetry is a debugging door onto the same topic.
+// --------------------------------------------------------------------------
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -111,9 +111,10 @@ app.Lifetime.ApplicationStopping.Register(() =>
 });
 
 if (app.Environment.IsDevelopment())
+{
     app.MapOpenApi();
-
-app.MapIngestionEndpoints();
+    app.MapDebugTelemetryEndpoint();
+}
 
 app.MapGrpcService<TelemetryService>();
 

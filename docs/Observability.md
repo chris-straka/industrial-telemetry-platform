@@ -95,11 +95,37 @@ adding a second one.
 | `ActivityKind` | SpanKind |
 | `SetTag` | attribute |
 
-Two places in this repo break the automatic propagation, both deliberately. The gateway
-buffers readings in SQLite, so the sensor's traceparent is stored on the row and replayed
-later as a LINK rather than a parent -- see `UploaderWorker.BuildTraceLinks`, and note that
-one upload fans in many sensor traces while a span may only have one parent. Kafka has the
-same problem and has not been solved yet (`TODO.md`).
+Two places in this repo break the automatic propagation, both deliberately, because the
+gateway buffers readings in SQLite. The 202 ends the sensor's span hours before the upload
+happens, so the traceparent is stored on the row and read back later -- see
+`ReceiveTelemetryEndpoint` for the capture and `UploaderWorker.BuildTraceLinks` for the
+replay.
+
+## Two traces, not one
+
+That buffering leaves the platform with two traces rather than one waterfall.
+
+| | spans |
+| --- | --- |
+| reading trace | emulator POST -> gateway receive -> (Kafka header) -> consumer -> Postgres |
+| batch trace | uploader span -> gRPC call -> ingestion API |
+
+The batch trace is rooted in the gateway because the uploader is a `BackgroundService`,
+and no inbound request exists to inherit a parent from.
+
+The two are joined by the 200 `ActivityLink`s on the upload span. Links point one way only:
+the batch trace names every reading trace it carried, and the reading traces hold no
+reference back. Whether the UI offers reverse navigation is a backend concern, not
+something in the data.
+
+The seam is unavoidable rather than a shortcut. One upload fans in 200 independent sensor
+traces, a span may have exactly one parent, and no parent chain can express a merge. Links
+are what the OTel spec prescribes for that shape.
+
+Which trace the Kafka header continues was the real choice. It carries the reading's own
+traceparent, so one trace follows a single reading from sensor to Postgres across an
+outage, which is what the store-and-forward demo has to show. Carrying the batch span
+instead would have made the cloud hop contiguous and split every reading's story in two.
 
 # Tempo
 

@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 namespace Industrial.Sensor.EdgeGateway.Features.Buffer;
 
 /// <summary>
-/// What the sensor sends us.
+/// What the sensor sends the gateway
 /// </summary>
 public record TelemetryDto(
     string MessageId,

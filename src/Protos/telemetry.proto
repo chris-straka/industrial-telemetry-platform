@@ -4,83 +4,54 @@ import "google/protobuf/timestamp.proto";
 
 option csharp_namespace = "Industrial.Ingestion.Api";
 
-// The grpc_csharp_plugin generator I installed reads this service definition
+// For use between gateway <-> ingestion API
 service TelemetryIngestion {
-  // One message carries a whole batch, and the server answers once.
-  //
-  // Unary-per-reading loses because it turns one round trip into 200.
-  // Client-streaming loses because the batch is bounded and already in memory.
-  // Bidirectional would ACK each record as it lands, which is better and more code.
-  // OTLP ships telemetry as unary with a repeated field for the same reasons.
-  //
-  // The cost is a ceiling: one batch is one message under a 4 MB MaxReceiveMessageSize.
-  // ~84 bytes a reading caps a batch near 50,000, and Uploader:BatchSize validates to 10,000.
+  // Unary
   rpc UploadTelemetry (UploadTelemetryRequest) returns (TelemetryResponse);
 }
 
-// One batch drained from the gateway's buffer, oldest first.
-// Oldest-first is a drain policy, not a correctness requirement: the response names
-// each reading by message_id, so the server may answer about them in any order.
+// One msg carries a whole batch of readings where max msg size is 4MiB (MaxReceiveMessageSize)
+// Each reading is 142 bytes, meaning each call can support 4_194_304 / 142 = 29,537 readings
 message UploadTelemetryRequest {
+  // 1 byte tag + 2 byte length
   repeated TelemetryReading readings = 1;
 }
 
-// The protoc generator I installed reads the message definitions
+// protoc reads msg definitions
 message TelemetryReading {
-  // Idempotency key, minted by the sensor and never regenerated downstream.
-  // Minting it at the gateway would leave the sensor's retried POST undefended.
-  // Same idea as Stripe's Idempotency-Key header.
+  // 3 + 38 + 9 + 4 + 13 + 9 + 9 + 57 = 142 bytes
+
+  // 1 byte tag + 1 byte len + 36 byte GUID string = 38 bytes
   string message_id = 1;
 
+  // 1 byte tag + 1 byte len + 7 byte payload = 9 bytes
   string equipment_id = 2;
 
-  // Monotonic per equipment_id, assigned by the sensor and starting at 1.
-  // Gaps prove loss, because MAX(sequence_number) must equal COUNT(*) per device.
-  // That makes "lost = 0" a measurement instead of a claim.
+  // 1 byte tag + ~3 byte payload = 4 bytes
   int64 sequence_number = 3;
 
-  // EVENT TIME: when the sensor took the reading, on the sensor's clock.
-  // Without it, readings drained after an outage would all claim to have happened during the flush.
-  // Edge RTCs drift, so this is the device's opinion of the time.
-  // The cloud stamps its own received_at on arrival and the consumer decides which to trust.
+  // 1 byte tag + 1 byte len + 11 byte payload = 13 bytes
   google.protobuf.Timestamp occurred_at = 4;
 
+  // 1 byte tag + 8 byte payload = 9 bytes
   double engine_temperature = 5;
-  double oil_pressure       = 6;
 
-  // W3C traceparent of the gateway span that received this reading.
-  // Carried per reading rather than once per batch, because 200 readings arrive from 200 different traces.
-  // Empty when nothing was listening at the time, since proto3 has no null string.
+  // 1 byte tag + 8 byte payload = 9 bytes
+  double oil_pressure = 6;
+
+  // 1 byte tag + 1 byte len + 55 byte payload = 57 bytes
   string traceparent = 7;
 }
 
 message TelemetryResponse {
-  // False when the batch stopped early on an infrastructure fault, so the gateway knows a
-  // remainder is still its problem. Both lists below are authoritative either way.
+  // 2 + 200 * 38 = 7,602 bytes
+
+  // 1 byte tag + 1 byte payload = 2 bytes
   bool success = 1;
 
-  // Reserved so a gateway built against an older contract cannot read a later field as the
-  // scalar it expects here.
-  reserved 2;
+  // 1 byte tag + 1 byte len + 36 byte GUID string = 38 bytes each
+  repeated string accepted_message_ids = 2;
 
-  // Readings durably produced to Kafka. The gateway deletes exactly these.
-  //
-  // Ids rather than a count of the batch prefix, because a prefix can only describe a server
-  // that stops dead at its first failure.
-  // This one skips an invalid reading and keeps going, which no single number can express.
-  // The cost is ~36 bytes a reading on a response answering a ~17 KB request.
-  //
-  // A response that never arrives deletes nothing and re-sends the whole batch.
-  // Those re-sends are duplicates by construction, and the cloud dedupes on message_id.
-  // At-least-once plus an idempotent consumer is effectively-once, gRPC has no exactly-once.
-  repeated string accepted_message_ids = 3;
-
-  // Readings the cloud will never accept no matter how often they are sent.
-  // The gateway deletes these too and counts edge.telemetry.rejected, a retry cannot help.
-  //
-  // Naming them here rather than failing the whole call with INVALID_ARGUMENT is what lets
-  // the gateway keep sending full batches.
-  // A call-level rejection says only "something in there was bad", which leaves resending
-  // one reading at a time as the sole way to find out which.
-  repeated string rejected_message_ids = 4;
+  // 1 byte tag + 1 byte len + 36 byte GUID string = 38 bytes each
+  repeated string rejected_message_ids = 3;
 }
