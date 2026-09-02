@@ -106,13 +106,15 @@ carries on, no one number can distinguish "the reading I refused" from "the read
 never reached". The order of the batch stops being load-bearing at the same time, since
 the response names readings rather than positions.
 
-# This drop is real loss, and `make verify` will say so
+# This drop is real loss, and the audit reports the evidence it can see
 
-A dropped reading breaks `MAX(SequenceNumber) == COUNT(*)` for its device. That is not a
-flaw in the check -- it is the check working. The invariant this repo protects is that
-loss is impossible *silently*; a refused reading is loss that is counted, logged with its
-`MessageId`, and visible as a gap. The alternative was a stall that eventually loses far
-more, and reports nothing at all.
+A rejected reading can create a sequence gap inside an emulator run. `make verify` reports those
+gaps using inferred restart boundaries; it does not use the invalid `MAX(sequence) - COUNT(*)`
+calculation across all restarts. A database-only audit still cannot assign a gap to an intentional
+sensor drop versus a downstream rejection, nor can it infer a dropped tail after the final row.
+The reliable evidence for a cloud rejection is therefore the error log plus
+`edge.telemetry.rejected`. The alternative was a stall that eventually loses far more new data and
+reports no forward progress.
 
 # Not handled
 

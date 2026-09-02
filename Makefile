@@ -6,7 +6,7 @@ help:
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
 # .PHONY tells Make these are cmd names, not files on my hard drive
-.PHONY: help fleet dev k8s compose-up up upd down clean train restore frontend ls migrate db-update db-check logs run-api run-worker run-em run-gw infra-init infra-apply infra-destroy \
+.PHONY: help fleet dev k8s compose-up up upd down clean train restore test frontend ls migrate db-update db-check db-rows logs infra-up run-api run-worker run-em run-gw infra-init infra-apply infra-destroy \
 	chaos-cloud-down chaos-cloud-up chaos-gateway-kill queue verify demo-help
 
 dev: ## Tilt dev loop
@@ -24,15 +24,19 @@ upd: ## docker compose up -d
 down: ## docker compose down
 	docker compose down
 
-clean: ## docker compose down -v (WIPES the edge buffer + postgres)
+clean: ## docker compose down -v (WIPES edge, Postgres, and Kafka data)
 	docker compose down -v
 
-train: ## regenerate training data and model.zip
+train: ## rebuild the online IID detector configuration in model.zip
 	dotnet run --project src/Industrial.Data.ML
 
 # Downloads dependencies for each project (since we're at the root .slnx)
 restore:
 	dotnet restore
+	dotnet tool restore
+
+test: ## build and run all .NET regression tests
+	dotnet test IndustrialPlatform.slnx
 
 frontend: ## run the Vite dev server
 	cd src/Industrial.Web.Dashboard && npm run dev
@@ -67,7 +71,7 @@ logs:
 
 # Start only backing infrastructure dependencies
 infra-up:
-	docker compose up -d postgres kafka otel-collector loki prometheus tempo
+	docker compose up -d postgres kafka kafka-init otel-collector loki prometheus tempo
 
 run-api:
 	dotnet run --project src/Industrial.Ingestion.Api
@@ -86,7 +90,7 @@ run-gw:
 #
 # The point: sensors keep producing through a total cloud outage, the gateway
 # survives its own restart mid-outage, and when the cloud returns the queue
-# drains with nothing lost and nothing duplicated.
+# drains every reading the gateway accepted, without duplicate Postgres rows.
 #
 # Watch `edge_queue_depth` and `edge_oldest_message_age_seconds` in Grafana
 # (localhost:3000) while running these.
@@ -99,7 +103,7 @@ demo-help: ## print the store-and-forward outage demo, step by step
 	@echo "4. make chaos-gateway-kill   # kill the gateway TOO, mid-outage"
 	@echo "5. make queue                # buffer survived the restart"
 	@echo "6. make chaos-cloud-up       # cloud returns; queue drains oldest-first"
-	@echo "7. make verify               # produced == ingested, duplicates == 0"
+	@echo "7. make verify               # queue/outbox drained; report duplicates, gaps, lag"
 
 # The cloud dies. Sensors and gateway keep running.
 fleet: ## start extra emulator containers (3 replicas, EQ-0..EQ-11)
@@ -123,7 +127,8 @@ queue: ## current edge buffer depth
 # The end-to-end proof. SQL lives in scripts/verify.sql so it stays readable (backslash
 # line-continuations do NOT work inside single quotes in shell, so inlining multi-line
 # SQL in a recipe silently ships literal backslashes to psql).
-verify: ## duplicates = 0, missing = 0, end-to-end lag
+verify: ## require drained queue/outbox; report duplicates, sequence gaps, lag
+	@curl -fs http://localhost:5272/buffer | python3 -c 'import json, sys; depth = json.load(sys.stdin)["queueDepth"]; print(f"edge queue depth: {depth}"); raise SystemExit(depth != 0)'
 	@docker exec -i industrialplatform-postgres-1 psql -U admin -d industrial_db -q < scripts/verify.sql
 
 # Run this when you specifically want to test your Terraform code locally

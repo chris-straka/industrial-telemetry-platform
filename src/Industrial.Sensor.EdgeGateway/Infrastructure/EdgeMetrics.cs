@@ -22,6 +22,7 @@ public sealed class EdgeMetrics : IDisposable
 
     private readonly Meter _meter;
     private readonly Counter<long> _uploadFailures;
+    private readonly Histogram<double> _uploadDuration;
 
     // NaN means nothing is buffered, so there is no age to report
     // A companion bool would need two volatile reads that can disagree, and this needs one
@@ -41,7 +42,7 @@ public sealed class EdgeMetrics : IDisposable
         Duplicates = _meter.CreateCounter<long>(
             "edge.telemetry.duplicate",
             unit: "{reading}",
-            description: "Readings rejected on receive because the MessageId was already buffered."
+            description: "Readings acknowledged as duplicates because the MessageId was buffered or recently settled."
         );
 
         Uploaded = _meter.CreateCounter<long>(
@@ -60,7 +61,7 @@ public sealed class EdgeMetrics : IDisposable
         Malformed = _meter.CreateCounter<long>(
             "edge.telemetry.malformed",
             unit: "{reading}",
-            description: "Readings rejected with 400 for a missing MessageId or EquipmentId."
+            description: "Readings rejected with 400 because an identity, sequence, timestamp, or measurement was invalid."
         );
 
         Rejected = _meter.CreateCounter<long>(
@@ -75,6 +76,12 @@ public sealed class EdgeMetrics : IDisposable
             "edge.upload.failures",
             unit: "{attempt}",
             description: "Upload attempts that ended without a full acknowledgement."
+        );
+
+        _uploadDuration = _meter.CreateHistogram<double>(
+            "edge.upload.duration",
+            unit: "ms",
+            description: "Duration of one logical gRPC batch attempt, tagged by classified outcome."
         );
 
         // Observable means OTel calls this at collection time instead of us pushing values
@@ -112,6 +119,12 @@ public sealed class EdgeMetrics : IDisposable
     // An untagged Add from somewhere else would land in the same metric with no outcome at all
     public void RecordUploadFailure(string outcome) =>
         _uploadFailures.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
+
+    public void RecordUploadDuration(double milliseconds, string outcome) =>
+        _uploadDuration.Record(
+            milliseconds,
+            new KeyValuePair<string, object?>("outcome", outcome)
+        );
 
     // Volatile because the gauge callbacks read these on OTel's collection thread
     // A plain write can sit in a register the reader never sees, so the dashboard freezes on a stale value

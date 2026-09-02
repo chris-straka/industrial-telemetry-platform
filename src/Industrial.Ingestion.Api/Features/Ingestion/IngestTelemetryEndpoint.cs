@@ -2,6 +2,7 @@ using System.Text.Json;
 using Confluent.Kafka;
 using FluentValidation;
 using Industrial.Ingestion.Api.Configuration;
+using Industrial.Shared;
 using Microsoft.Extensions.Options;
 
 namespace Industrial.Ingestion.Api.Features.Ingestion;
@@ -14,9 +15,21 @@ public class TelemetryValidator : AbstractValidator<TelemetryDto>
 {
     public TelemetryValidator()
     {
-        RuleFor(x => x.EquipmentId).NotEmpty();
-        RuleFor(x => x.EngineTemperature).InclusiveBetween(-50, 250);
+        RuleFor(x => x.EquipmentId)
+            .NotEmpty()
+            .MaximumLength(64)
+            .Matches("^[A-Za-z0-9._:-]+$")
+            .Must(id => id is null || id == id.Trim());
+        RuleFor(x => x.MessageId)
+            .Must(id => id is null || Guid.TryParseExact(id, "D", out _))
+            .WithMessage("MessageId must use the canonical GUID format.");
+        RuleFor(x => x.EngineTemperature).Must(IsSupportedMeasurement);
+        RuleFor(x => x.OilPressure).Must(IsSupportedMeasurement);
+        RuleFor(x => x.OccurredAt).Must(value => value is null || value != default);
     }
+
+    private static bool IsSupportedMeasurement(double value) =>
+        double.IsFinite(value) && Math.Abs(value) <= float.MaxValue;
 }
 
 public static class IngestTelemetryEndpoint
@@ -37,16 +50,15 @@ public static class IngestTelemetryEndpoint
                     return Results.ValidationProblem(validationResult.ToDictionary());
 
                 // Same envelope the gRPC path produces
-                var payload = new
-                {
-                    MessageId = request.MessageId ?? Guid.NewGuid().ToString(),
+                var payload = new TelemetryEnvelope(
+                    request.MessageId ?? Guid.CreateVersion7().ToString("D"),
                     request.EquipmentId,
-                    SequenceNumber = 0L,
-                    OccurredAt = request.OccurredAt ?? DateTimeOffset.UtcNow,
-                    ReceivedAt = DateTimeOffset.UtcNow,
+                    SequenceNumber: 1,
+                    request.OccurredAt ?? DateTimeOffset.UtcNow,
+                    DateTimeOffset.UtcNow,
                     request.EngineTemperature,
-                    request.OilPressure,
-                };
+                    request.OilPressure
+                );
 
                 var message = new Message<string, string>
                 {

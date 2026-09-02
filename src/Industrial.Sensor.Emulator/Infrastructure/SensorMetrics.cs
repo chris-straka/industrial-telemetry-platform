@@ -8,7 +8,7 @@ namespace Industrial.Sensor.Emulator.Infrastructure;
 /// </summary>
 /// <remarks>
 /// Instruments are only read at export time, so anything in between has to survive
-/// The five tallies are Counters because a running total carries that gap, a Gauge does not
+/// The tallies are Counters because a running total carries that gap, a Gauge does not
 ///
 /// Depth is a Gauge, since the question is how full the channel is right now
 /// An UpDownCounter needs a matching -1 per dequeue, and one miss stays wrong forever
@@ -18,6 +18,7 @@ public sealed class SensorMetrics : IDisposable
     public const string MeterName = "Industrial.Sensor.Emulator";
 
     private readonly Meter _meter;
+    private readonly Histogram<double> _deliveryDuration;
 
     public SensorMetrics(Channel<TelemetryDto> channel)
     {
@@ -44,13 +45,25 @@ public sealed class SensorMetrics : IDisposable
         Rejected = _meter.CreateCounter<long>(
             "sensor.telemetry.rejected",
             unit: "{reading}",
-            description: "Readings the gateway refused with 429 because its own buffer was full."
+            description: "Readings discarded after the gateway returned anything other than 202."
         );
 
         Failed = _meter.CreateCounter<long>(
             "sensor.telemetry.failed",
             unit: "{reading}",
             description: "Sends that never got an answer -- gateway unreachable or circuit open."
+        );
+
+        DeliveryDropped = _meter.CreateCounter<long>(
+            "sensor.telemetry.delivery_dropped",
+            unit: "{reading}",
+            description: "Dequeued readings intentionally discarded after the bounded delivery policy ended without a 202."
+        );
+
+        _deliveryDuration = _meter.CreateHistogram<double>(
+            "sensor.telemetry.delivery.duration",
+            unit: "ms",
+            description: "End-to-end duration of one dequeued reading's bounded HTTP delivery policy."
         );
 
         // Otel SDK calls this every 60s to send the buffer size to the collector
@@ -67,6 +80,13 @@ public sealed class SensorMetrics : IDisposable
     public Counter<long> Sent { get; }
     public Counter<long> Rejected { get; }
     public Counter<long> Failed { get; }
+    public Counter<long> DeliveryDropped { get; }
+
+    public void RecordDeliveryDuration(double milliseconds, string outcome) =>
+        _deliveryDuration.Record(
+            milliseconds,
+            new KeyValuePair<string, object?>("outcome", outcome)
+        );
 
     // The metrics registry holds a reference to every live Meter
     // So _meter outlives SensorMetrics and keeps reporting

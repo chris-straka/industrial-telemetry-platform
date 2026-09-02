@@ -8,9 +8,9 @@ services:
       - ./src/Industrial.Web.Dashboard:/app
       - /app/node_modules
     # Run the dev server and bind to all interfaces so Docker can expose it
-    command: sh -c "npm install && npm run dev -- --host"
+    command: sh -c "npm ci && npm run dev -- --host"
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     environment:
       # This works for the dev server, but remember:
       # Vite bakes env vars at BUILD time for production
@@ -22,7 +22,7 @@ services:
       context: .
       dockerfile: src/Industrial.Web.Api/Dockerfile
     ports:
-      - "5090:8080"
+      - "127.0.0.1:5090:8080"
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - Kafka__BootstrapServers=kafka:9092
@@ -33,8 +33,8 @@ services:
       - OTel__Endpoint=http://otel-collector:4317
       - CORS__AllowedOrigins=http://localhost:3001,http://localhost:5173
     depends_on:
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
 
   ingestion-api:
     image: ingestion-api
@@ -45,8 +45,8 @@ services:
       # 8080 = REST (HTTP/1.1), 8081 = gRPC (HTTP/2 cleartext).
       # Two ports because there is no TLS here, so ALPN cannot negotiate the protocol
       # and each endpoint has to declare it. See Kestrel config in appsettings.json.
-      - "5089:8080"
-      - "5091:8081"
+      - "127.0.0.1:5089:8080"
+      - "127.0.0.1:5091:8081"
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - Kafka__BootstrapServers=kafka:9092
@@ -54,8 +54,8 @@ services:
       - OTel__ServiceName=Industrial.Ingestion.Api
       - OTel__Endpoint=http://otel-collector:4317
     depends_on:
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
 
   # Sits between sensors and cloud
   #
@@ -70,7 +70,7 @@ services:
       context: .
       dockerfile: src/Industrial.Sensor.EdgeGateway/Dockerfile
     ports:
-      - "5272:8080"
+      - "127.0.0.1:5272:8080"
     volumes:
       - edge_buffer_data:/data
     environment:
@@ -78,7 +78,13 @@ services:
       # Points at the ingestion API's HTTP/2 port, not its REST port.
       - Cloud__ApiUrl=http://ingestion-api:8081
       - Buffer__Path=/data/edge-buffer.db
+      - Buffer__MaxDepth=500000
+      - Buffer__SettledIdRetentionHours=24
       - Uploader__BatchSize=200
+      - Uploader__IdleDelayMs=500
+      - Uploader__BaseBackoffSeconds=1
+      - Uploader__MaxBackoffSeconds=30
+      - Uploader__UploadTimeoutSeconds=30
       - OTel__ServiceName=Industrial.Sensor.EdgeGateway
       - OTel__Endpoint=http://otel-collector:4317
     # no depends_on because gateway is meant to work without the cloud
@@ -100,6 +106,9 @@ services:
       - ConnectionStrings__IndustrialDb=Host=postgres;Database=industrial_db;Username=admin;Password=password
       - Consumer__BaseBackoffSeconds=1
       - Consumer__MaxBackoffSeconds=30
+      - Outbox__IdleDelayMs=500
+      - Outbox__BaseBackoffSeconds=1
+      - Outbox__MaxBackoffSeconds=30
       - Gemini__ApiKey=${GEMINI_API_KEY}
       - Gemini__Model=gemini-flash-lite-latest
       - Kafka__BootstrapServers=kafka:9092
@@ -111,8 +120,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
 
   sensor-emulator:
     image: sensor-emulator
@@ -176,7 +185,7 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: industrial_db
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d industrial_db"]
       interval: 5s
@@ -186,7 +195,7 @@ services:
   pgadmin:
     image: dpage/pgadmin4
     ports:
-      - "5050:80"
+      - "127.0.0.1:5050:80"
     environment:
       - PGADMIN_DEFAULT_EMAIL=admin@admin.com
       - PGADMIN_DEFAULT_PASSWORD=admin
@@ -215,13 +224,15 @@ services:
       - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
       # Tell Kafka to use the 'INTERNAL' listener for internal broker traffic
       - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
-      # Add a fixed Cluster ID so it doesn't try to re-format on restart.
-      - KAFKA_KRAFT_CLUSTER_ID=industrial-platform-cluster
-      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
-      - BITNAMI_DEBUG=true
+      # Kafka expects a 22-character base64 UUID, not an arbitrary display name. Keeping it
+      # fixed lets the broker reopen the metadata stored on the named volume after a restart.
+      - KAFKA_KRAFT_CLUSTER_ID=abcdefghijklmnopqrstuv
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=false
+      - BITNAMI_DEBUG=false
+    volumes:
+      - kafka_data:/bitnami/kafka
     ports:
-      - "9092:9092"
-      - "9094:9094" # Map external port (for Kafka UI tools on Mac)
+      - "127.0.0.1:9094:9094" # Map external port (for Kafka UI tools on Mac)
     healthcheck:
       test:
         [
@@ -232,10 +243,21 @@ services:
       timeout: 10s
       retries: 10
 
+  kafka-init:
+    image: public.ecr.aws/bitnami/kafka:4.2.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-events --partitions 6 --replication-factor 1
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-alerts --partitions 6 --replication-factor 1
+
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       - KAFKA_CLUSTERS_0_NAME=local
       - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
@@ -252,14 +274,14 @@ services:
       - ./monitoring/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     ports:
-      - "4317:4317" # OTLP gRPC
-      - "4318:4318" # OTLP HTTP
-      - "8889:8889" # Prometheus exporter port
+      - "127.0.0.1:4317:4317" # OTLP gRPC
+      - "127.0.0.1:4318:4318" # OTLP HTTP
+      - "127.0.0.1:8889:8889" # Prometheus exporter port
 
   loki:
     image: grafana/loki:main-8703b0c
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     volumes:
       - ./monitoring/loki-config.yaml:/etc/loki/local-config.yaml
     command: -config.file=/etc/loki/local-config.yaml
@@ -269,12 +291,12 @@ services:
     volumes:
       - ./monitoring/prometheus.yaml:/etc/prometheus/prometheus.yml
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
 
   tempo:
     image: grafana/tempo:latest
     ports:
-      - "3200:3200"
+      - "127.0.0.1:3200:3200"
       # 4317 host port removed to avoid conflict with OTel Collector
     volumes:
       - ./monitoring/tempo.yaml:/etc/tempo.yaml
@@ -283,7 +305,7 @@ services:
   grafana:
     image: grafana/grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - ./monitoring/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
     environment:
@@ -293,3 +315,4 @@ services:
 volumes:
   postgres_data:
   edge_buffer_data:
+  kafka_data:

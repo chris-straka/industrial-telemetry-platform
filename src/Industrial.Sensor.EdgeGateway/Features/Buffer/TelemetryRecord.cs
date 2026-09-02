@@ -15,8 +15,8 @@ public class TelemetryRecord
     // The oldest buffered readings will hold the smallest Id (what we use to drain)
     public long Id { get; set; }
 
-    // Sensor mints this idempotency key, EdgeDbContext uses it as the unique index
-    // A retried POST is normally a fresh insert, this key keeps it one row
+    // Sensor mints this idempotency key. The live-table unique index catches a retry while queued;
+    // SettledMessage catches one that arrives after this row has been removed.
     public string MessageId { get; set; } = string.Empty;
 
     public string EquipmentId { get; set; } = string.Empty;

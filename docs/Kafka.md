@@ -211,8 +211,10 @@ The gateway does the third (`UploaderWorker`, counted as `edge.telemetry.rejecte
 does the consumer (`TelemetryConsumerWorker`, counted as `worker.telemetry.discarded`).
 
 For the gateway that is a deliberate scope decision, tracked in `TODO.md` as needing a
-quarantine table. The consumer needs no DLQ: `TelemetryReadingValidator` refuses a non-GUID
-`MessageId` at the ingestion API, so nothing reaching Kafka can fail that parse.
+quarantine table. Ingestion validation and the shared `TelemetryEnvelope` make consumer poison
+rare, but Kafka is still a system boundary: an operator or another producer can publish malformed
+bytes. Diagnostics therefore commits and meters poison explicitly; `TODO.md` tracks a DLQ so the
+bad payload can remain inspectable.
 
 The gateway's version is milder than a classic poison message. The cloud names the ids it
 refuses in `rejected_message_ids` instead of failing the whole call, so the gateway never

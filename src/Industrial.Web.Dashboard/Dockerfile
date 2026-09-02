@@ -3,7 +3,7 @@
 FROM node:24-alpine AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 COPY . .
 # Vite inlines this at build time, so it has to be an ARG, not a runtime env var.
 ARG VITE_API_URL

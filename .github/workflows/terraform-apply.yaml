@@ -1,10 +1,10 @@
 name: Terraform Apply
 
+# The production infrastructure prototype is not yet plan-valid or backed by remote state.
+# Keep apply manual until the checklist in TODO.md is complete and the environment has approval
+# protection; a merge must never imply authorization to mutate a cloud account.
 on:
-    push:
-        branches: [main]
-        paths:
-            - "infra/**"
+    workflow_dispatch:
 
 jobs:
     apply-prod:

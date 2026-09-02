@@ -88,7 +88,9 @@ builder.Services.AddSingleton(sp => // service provider
         LingerMs = 20,
         MessageTimeoutMs = 20_000,
         CompressionType = CompressionType.Zstd,
-        AllowAutoCreateTopics = true,
+        // A typo must fail delivery and leave the gateway row retryable, not create a silent
+        // parallel topic that no consumer reads.
+        AllowAutoCreateTopics = false,
         // MetadataMaxAgeMs = 5000,
     };
 
@@ -103,13 +105,6 @@ builder.Services.AddGrpc();
 builder.Services.AddOpenApi();
 var app = builder.Build();
 
-app.Lifetime.ApplicationStopping.Register(() =>
-{
-    var kafkaProducer = app.Services.GetRequiredService<IProducer<string, string>>();
-    kafkaProducer.Flush(TimeSpan.FromSeconds(5));
-    kafkaProducer.Dispose();
-});
-
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
@@ -117,5 +112,6 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapGrpcService<TelemetryService>();
+app.MapGet("/health", () => Results.Ok());
 
 app.Run();

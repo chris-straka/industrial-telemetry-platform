@@ -1,4 +1,5 @@
 // ImplicitUsings is hiding some packages
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Threading.Channels;
 using Industrial.Sensor.Emulator.Configuration;
@@ -86,11 +87,11 @@ builder
 // Polly adds retries with exponential backoff + jitter and a circuit breaker.
 // Some sensors won't have this, but some do have backoff + jitter at the firmware level.
 //
-// Retries guarantee ALO delivery (every hop is ALO in this project)
-// A retry happens when an outcome is ambigious (might've worked but res is lost)
-//
-// Combining ALO delivery + an idempotent receiver = effectively-once (EffO)
-// Exactly Once (EOS) is not possible at the transport layer alone.
+// Retries reduce loss during short gateway interruptions, but this emulator is deliberately
+// best-effort: after the bounded policy finishes, it discards the dequeued reading. The durable
+// at-least-once contract begins only after the gateway replies 202. A retry happens when an
+// outcome is ambiguous (the write may have worked even though the response was lost), so the
+// gateway still needs MessageId idempotency.
 
 // This is a decoupling buffer, not a durability buffer
 // It prevents the emulator from waiting on the network (if it's slow or down)
@@ -98,7 +99,9 @@ builder
 //
 // A Channel is a thread-safe, async, in-memory queue
 // FullMode decides what happens when it's full (Wait, DropOldest, DropNewest)
-// FullMode.Wait means it won't evict anything when it's full
+// FullMode.Wait means the channel will not evict an older reading. Acquisition deliberately uses
+// TryWrite rather than WriteAsync, so a full buffer drops the new sample instead of slowing the
+// simulated hardware loop.
 builder.Services.AddSingleton(
     // Bounded to limit RAM usage (sensor is RAM limited)
     Channel.CreateBounded<TelemetryDto>(
@@ -132,7 +135,7 @@ public static class TelemetryClient
 /// <summary>
 /// LOOP 1: acquisition. Generates readings and never touches the network.
 /// Acts as the producer in the Producer/Consumer (P/C pattern).
-/// The drop rate is DeviceCount / IntervalSeconds (4 / 2 = 2 readings/sec)
+/// The acquisition rate is DeviceCount / IntervalSeconds (4 / 2 = 2 readings/sec)
 ///
 /// IOptions&lt;T&gt; can only be injected from a built service provider (builder.Build())
 /// </summary>
@@ -236,6 +239,9 @@ public class TransmissionWorker(
 
         await foreach (var data in channel.Reader.ReadAllAsync(stoppingToken))
         {
+            var startedAt = Stopwatch.GetTimestamp();
+            var outcome = "cancelled";
+
             try
             {
                 // CreateClient() returns a new HttpClient but not a new handler chain.
@@ -247,14 +253,18 @@ public class TransmissionWorker(
                 // The stoppingToken will abort the HTTP call on shutdown
                 // But that only stops the client from waiting for a response
                 // This means the result on the server is ambiguous (EffO protects)
-                var response = await client.PostAsJsonAsync(
+                using var response = await client.PostAsJsonAsync(
                     TelemetryClient.Route,
                     data,
                     stoppingToken
                 );
 
-                if (response.IsSuccessStatusCode)
+                // Only the gateway's 202 carries the durable-ownership promise. Treat an
+                // unexpected 2xx from a proxy or misrouted endpoint as a dropped delivery rather
+                // than quietly widening the contract to every successful-looking response.
+                if (response.StatusCode == System.Net.HttpStatusCode.Accepted)
                 {
+                    outcome = "accepted";
                     metrics.Sent.Add(1);
                     string status = data.EngineTemperature > 200 ? "[ALARM]" : "[OK]";
                     logger.LogInformation(
@@ -267,32 +277,53 @@ public class TransmissionWorker(
                 }
                 else if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                 {
+                    outcome = "backpressure";
                     // BACKPRESSURE -> consumer telling producer to slow down
                     // Polly reads/respects the consumer's Retry-After response header
                     metrics.Rejected.Add(1);
+                    metrics.DeliveryDropped.Add(1);
                     logger.LogWarning(
-                        "[BACKPRESSURE] Gateway buffer full, asked to retry after {RetryAfter}",
+                        "[BACKPRESSURE] Gateway buffer stayed full after bounded retries; dropping reading. Retry-After was {RetryAfter}",
                         response.Headers.RetryAfter?.ToString() ?? "unspecified"
                     );
                 }
                 else
                 {
+                    outcome = response.IsSuccessStatusCode ? "unexpected_success" : "rejected";
+                    metrics.Rejected.Add(1);
+                    metrics.DeliveryDropped.Add(1);
                     var error = await response.Content.ReadAsStringAsync(stoppingToken);
                     logger.LogWarning(
-                        "[REJECTED] {EquipmentId} : {Error}",
+                        "[REJECTED] Gateway refused {EquipmentId}; dropping reading: {Error}",
                         data.EquipmentId,
                         error
                     );
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
+                break;
+            }
+            catch (Exception ex)
+            {
+                outcome = "failed";
                 // Two different paths land here (circuit breaker related)
                 // 1. Polly exhausted its retries (timeout, 5xx, conn reset)
                 // 2. The circuit is open from earlier failures (didn't even try)
                 metrics.Failed.Add(1);
-                logger.LogError("[CRITICAL] Gateway is down: {Message}", ex.Message);
+                metrics.DeliveryDropped.Add(1);
+                logger.LogError(
+                    "[DELIVERY DROPPED] Gateway did not accept the reading after bounded retries: {Message}",
+                    ex.Message
+                );
                 // If 2. it will eventually send a half-open PROBE, not a retry to close the circuit
+            }
+            finally
+            {
+                metrics.RecordDeliveryDuration(
+                    Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds,
+                    outcome
+                );
             }
         }
     }

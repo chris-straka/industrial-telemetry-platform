@@ -11,8 +11,9 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
 // --------------------------------------------------------------------------------
-// Sits between sensors and the cloud and makes sure sensor readings are never lost
-// Even when the cloud, network, or this process dies.
+// Sits between sensors and the cloud and durably owns every valid reading after replying 202,
+// even when the cloud, network, or this process dies. The emulator is intentionally best-effort
+// before that acknowledgement boundary.
 //
 //   sensor --HTTP--> [ receiver -> SQLite (durable) -> uploader ] --gRPC--> cloud
 //                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -23,6 +24,11 @@ using OpenTelemetry.Trace;
 // --------------------------------------------------------------------------------
 
 var builder = WebApplication.CreateBuilder(args);
+
+// A legitimate sensor reading is a few hundred bytes. Bound the HTTP body before JSON binding so
+// ignored properties or whitespace cannot turn the unauthenticated LAN endpoint into a memory and
+// disk pressure primitive.
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 16 * 1024);
 
 #region config
 builder
@@ -63,6 +69,7 @@ builder.Services.AddDbContext<EdgeDbContext>(
 );
 
 builder.Services.AddSingleton<BufferDepth>();
+builder.Services.AddSingleton<BufferMutationGate>();
 builder.Services.AddSingleton<EdgeMetrics>();
 
 // OTel
@@ -106,11 +113,30 @@ using (var scope = app.Services.CreateScope())
     // If the schema changes, we drain it then migrate
     await db.Database.EnsureCreatedAsync();
 
+    // EnsureCreated does not add a newly introduced table to an existing database. Completion
+    // markers are a backwards-compatible buffer enhancement, so create that one table explicitly
+    // rather than requiring an operator to discard already-buffered telemetry during an upgrade.
+    await db.Database.ExecuteSqlRawAsync(
+        """
+        CREATE TABLE IF NOT EXISTS "SettledMessages" (
+            "MessageId" TEXT NOT NULL CONSTRAINT "PK_SettledMessages" PRIMARY KEY,
+            "SettledAt" TEXT NOT NULL
+        );
+        """
+    );
+    await db.Database.ExecuteSqlRawAsync(
+        """
+        CREATE INDEX IF NOT EXISTS "IX_SettledMessages_SettledAt"
+        ON "SettledMessages" ("SettledAt");
+        """
+    );
+
     // WAL will write to a log file first and fold changes into the DB later in a CP
     // Allows the uploader read and the receiver to write simultaneously
     await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
 
     var buffered = await db.TelemetryRecords.CountAsync();
+    app.Services.GetRequiredService<BufferDepth>().Initialize(buffered);
     if (buffered > 0)
     {
         // Anything still left in the DB was written by a previous run (proof of durability)

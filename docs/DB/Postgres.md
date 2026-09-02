@@ -76,9 +76,10 @@ Two indexes here take that write hit, so both got v7-shaped keys: the PK on `Id`
 unique index on `MessageId` (which is v7 because the sensor mints it that way). The third,
 `(EquipmentId, OccurredAt)`, is already time-ordered per device.
 
-**Rejected: a sequential `bigint` identity for `Id`.** Denser than a uuid and perfectly
-ordered. Rejected because the id has to be mintable at the *sensor*, offline, with no
-coordination — see below.
+**Alternative: a sequential `bigint` identity for `Id`.** Denser than a uuid and perfectly
+ordered. The database-local `Id` does not need to be minted at the sensor; `MessageId` is the
+offline identity carried across services. This project keeps both as v7 UUIDs for one consistent
+identifier shape, but that is a simplicity choice rather than a distributed-systems requirement.
 
 ## Why `MessageId` is `Guid` and not `string`
 

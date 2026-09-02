@@ -21,10 +21,12 @@ public record TelemetryDto(
 
 public static class ReceiveTelemetryEndpoint
 {
+    private const int MaxTraceParentLength = 128;
+
     public static void MapReceiverEndpoints(this IEndpointRouteBuilder app)
     {
-        // ILogger<T> is the normal injection method but can't be used in static classes
-        // A scoped service pulled in here (EdgeDbContext) is captive for the process life
+        // ILogger<T> is the normal injection method but a static class cannot be T. Resolve only
+        // the singleton factory here; EdgeDbContext remains a per-request handler parameter.
         var logger = app
             .ServiceProvider.GetRequiredService<ILoggerFactory>()
             .CreateLogger(typeof(ReceiveTelemetryEndpoint).FullName!);
@@ -36,90 +38,124 @@ public static class ReceiveTelemetryEndpoint
                 EdgeDbContext db,
                 EdgeMetrics metrics,
                 BufferDepth bufferDepth,
+                BufferMutationGate mutationGate,
                 IOptions<BufferOptions> bufferOptions,
                 HttpContext http
             ) =>
             {
-                // MessageId "" inserts once, then every further "" MessageId is discarded as a dupe
-                if (
-                    string.IsNullOrWhiteSpace(req.MessageId)
-                    || string.IsNullOrWhiteSpace(req.EquipmentId)
-                )
+                var validationError = TelemetryAdmissionValidator.Validate(
+                    req,
+                    out var canonicalMessageId
+                );
+                if (validationError is not null)
                 {
                     metrics.Malformed.Add(1);
-                    return Results.BadRequest(
-                        new { error = "message_id_and_equipment_id_required" }
-                    );
+                    return Results.BadRequest(new { error = validationError });
                 }
 
-                // load shedding (drop readings to prevent disk overflow)
-                var maxDepth = bufferOptions.Value.MaxDepth;
-                var depth = bufferDepth.Current;
-                if (depth >= maxDepth)
-                {
-                    metrics.Shed.Add(1);
-
-                    // Server's answer to the thundering herd problem
-                    // Works even if client's don't have Polly retrying automatically
-                    var retryAfter = Random.Shared.Next(2, 15);
-
-                    logger.LogWarning(
-                        "Buffer full ({Depth}/{Max}). Shedding {EquipmentId}, retry in {RetryAfter}s.",
-                        depth,
-                        maxDepth,
-                        req.EquipmentId,
-                        retryAfter
-                    );
-
-                    http.Response.Headers.RetryAfter = retryAfter.ToString();
-                    return Results.Json(
-                        new { error = "buffer_full", retryAfterSeconds = retryAfter },
-                        statusCode: StatusCodes.Status429TooManyRequests
-                    );
-                }
-
-                var record = new TelemetryRecord
-                {
-                    MessageId = req.MessageId,
-                    EquipmentId = req.EquipmentId,
-                    SequenceNumber = req.SequenceNumber,
-                    OccurredAt = req.OccurredAt,
-                    BufferedAt = DateTimeOffset.UtcNow, // (Never leaves the gateway)
-                    TraceParent = Activity.Current?.Id, // ASP.NET Core span for this request (Otel)
-                    EngineTemperature = req.EngineTemperature,
-                    OilPressure = req.OilPressure,
-                };
-
-                db.TelemetryRecords.Add(record);
-
+                await mutationGate.EnterAsync(http.RequestAborted);
                 try
                 {
-                    // One SaveChanges == one transaction == one fsync (synchronous=FULL)
-                    // Flushing every reading caps throughput to the HD's fsync rate (not CPU)
+                    // A MessageId can be in exactly one of two durable states: queued or recently
+                    // settled. Check both before reserving capacity so retries stay idempotent even
+                    // when the queue happens to be full.
+                    var alreadyKnown =
+                        await db.SettledMessages.AnyAsync(
+                            x => x.MessageId == canonicalMessageId,
+                            http.RequestAborted
+                        )
+                        || await db.TelemetryRecords.AnyAsync(
+                            x => x.MessageId == canonicalMessageId,
+                            http.RequestAborted
+                        );
 
-                    // No CancellationToken on purpose, passing it would throw away a reading
-                    // Kestrel trips RequestAborted the moment the sensor hangs up
-                    // We already hold the reading by then and would rather keep it
-                    await db.SaveChangesAsync();
+                    if (alreadyKnown)
+                    {
+                        metrics.Duplicates.Add(1);
+                        logger.LogDebug(
+                            "Duplicate MessageId {MessageId} from {EquipmentId} ignored.",
+                            canonicalMessageId,
+                            req.EquipmentId
+                        );
+                        return Results.Accepted();
+                    }
 
-                    // Counters move after the await so a failed save can't inflate them
-                    metrics.Received.Add(1);
-                    bufferDepth.Increment();
+                    // Reserve before touching SQLite. Compare-exchange makes this ceiling exact
+                    // across concurrent HTTP requests; a failed insert releases the reservation.
+                    var maxDepth = bufferOptions.Value.MaxDepth;
+                    if (!bufferDepth.TryReserve(maxDepth))
+                    {
+                        metrics.Shed.Add(1);
 
-                    // 202 means accepted but not finished, 201 means a resource was created
-                    // The reading still has to reach the cloud (no URL to hand back yet)
-                    return Results.Accepted();
+                        // Jitter keeps a fleet from retrying in lockstep when space reappears.
+                        var retryAfter = Random.Shared.Next(2, 15);
+
+                        logger.LogWarning(
+                            "Buffer full ({Depth}/{Max}). Shedding {EquipmentId}, retry in {RetryAfter}s.",
+                            bufferDepth.Current,
+                            maxDepth,
+                            req.EquipmentId,
+                            retryAfter
+                        );
+
+                        http.Response.Headers.RetryAfter = retryAfter.ToString();
+                        return Results.Json(
+                            new { error = "buffer_full", retryAfterSeconds = retryAfter },
+                            statusCode: StatusCodes.Status429TooManyRequests
+                        );
+                    }
+
+                    var traceParent = Activity.Current?.Id;
+                    if (traceParent?.Length > MaxTraceParentLength)
+                        traceParent = null;
+
+                    var record = new TelemetryRecord
+                    {
+                        MessageId = canonicalMessageId,
+                        EquipmentId = req.EquipmentId,
+                        SequenceNumber = req.SequenceNumber,
+                        OccurredAt = req.OccurredAt,
+                        BufferedAt = DateTimeOffset.UtcNow, // Never leaves the gateway.
+                        TraceParent = traceParent,
+                        EngineTemperature = req.EngineTemperature,
+                        OilPressure = req.OilPressure,
+                    };
+
+                    db.TelemetryRecords.Add(record);
+
+                    try
+                    {
+                        // One SaveChanges == one transaction == one fsync (synchronous=FULL).
+                        // No CancellationToken on purpose: after reserving the reading, a lost HTTP
+                        // connection makes the result ambiguous and the durable write must finish.
+                        await db.SaveChangesAsync();
+
+                        metrics.Received.Add(1);
+
+                        // 202 means accepted but not finished: the reading is durable locally and
+                        // still has to reach the cloud.
+                        return Results.Accepted();
+                    }
+                    catch (DbUpdateException ex) when (IsDuplicateMessageId(ex))
+                    {
+                        bufferDepth.Release(1);
+                        metrics.Duplicates.Add(1);
+                        logger.LogDebug(
+                            "Duplicate MessageId {MessageId} from {EquipmentId} ignored.",
+                            canonicalMessageId,
+                            req.EquipmentId
+                        );
+                        return Results.Accepted();
+                    }
+                    catch
+                    {
+                        bufferDepth.Release(1);
+                        throw;
+                    }
                 }
-                catch (DbUpdateException ex) when (IsDuplicateMessageId(ex))
+                finally
                 {
-                    // The sensor re-sent a reading whose 202 was lost (retry despite success)
-                    metrics.Duplicates.Add(1);
-                    logger.LogDebug(
-                        "Duplicate MessageId {MessageId} from {EquipmentId} ignored.",
-                        req.MessageId,
-                        req.EquipmentId
-                    );
-                    return Results.Accepted();
+                    mutationGate.Exit();
                 }
             }
         );

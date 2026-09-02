@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { HubConnectionBuilder, LogLevel } from '@microsoft/signalr'
+import { HubConnectionBuilder, HttpTransportType, LogLevel } from '@microsoft/signalr'
 import type { TelemetryEvent, TelemetryAlert } from '../types/telemetry'
 
 export function useTelemetry(
@@ -16,40 +16,108 @@ export function useTelemetry(
     })
 
     useEffect(() => {
-        const apiUrl = import.meta.env.VITE_API_URL
-        if (!apiUrl) {
-            throw new Error('VITE_API_URL is not set. Vite bakes it in at build time.')
-        }
+        // Production routes the static site and API through one origin. Development can still
+        // override it because Vite and the API normally use different localhost ports.
+        const apiUrl = (import.meta.env.VITE_API_URL || window.location.origin).replace(/\/$/, '')
 
         const connection = new HubConnectionBuilder()
-            .withUrl(`${apiUrl}/telemetryHub`)
+            .withUrl(`${apiUrl}/telemetryHub`, {
+                transport: HttpTransportType.WebSockets,
+                skipNegotiation: true,
+            })
             .configureLogging(LogLevel.Information)
-            .withAutomaticReconnect()
+            .withAutomaticReconnect({
+                // The built-in default stops after four tries. A cloud outage can be much
+                // longer, so cap the delay without ever giving up on an open dashboard.
+                nextRetryDelayInMilliseconds: ({ previousRetryCount }) =>
+                    Math.min(1_000 * (2 ** Math.min(previousRetryCount, 5)), 30_000),
+            })
             .build()
 
+        let disposed = false
+        let retryTimer: number | undefined
+        let retryDelayMs = 1_000
+
         connection.on('telemetry_events', (payload: string) => {
-            const parsed = parse<TelemetryEvent>(payload)
+            const parsed = parse(payload, isTelemetryEvent)
             if (parsed) eventRef.current?.(parsed)
         })
 
         connection.on('telemetry_alerts', (payload: string) => {
-            const parsed = parse<TelemetryAlert>(payload)
+            const parsed = parse(payload, isTelemetryAlert)
             if (parsed) alertRef.current?.(parsed)
         })
 
-        connection.start().catch(console.error)
+        // Automatic reconnect starts only after one successful connection. This loop covers the
+        // common Compose race where the browser loads before Web.Api has finished starting.
+        const start = async () => {
+            try {
+                await connection.start()
+                retryDelayMs = 1_000
+            } catch (error) {
+                if (disposed) return
+                console.error('SignalR initial connection failed; retrying', error)
+                retryTimer = window.setTimeout(() => { void start() }, retryDelayMs)
+                retryDelayMs = Math.min(retryDelayMs * 2, 30_000)
+            }
+        }
 
-        return () => { connection.stop() }
+        void start()
+
+        return () => {
+            disposed = true
+            if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+            void connection.stop()
+        }
     }, []) // Empty array = One connection for life of component
 }
 
 // A throw inside a SignalR handler kills the whole connection, so one bad payload
 // would take the dashboard down until it reconnects.
-function parse<T>(payload: string): T | null {
+function parse<T>(payload: string, isExpected: (value: unknown) => value is T): T | null {
     try {
-        return JSON.parse(payload) as T
+        const value: unknown = JSON.parse(payload)
+        if (isExpected(value)) return value
+        console.error('Discarding payload with the wrong telemetry shape', value)
+        return null
     } catch {
         console.error('Discarding unreadable payload', payload)
         return null
     }
+}
+
+function isTelemetryEvent(value: unknown): value is TelemetryEvent {
+    if (!isRecord(value)) return false
+    return hasIdentityAndEventTime(value)
+        && isFiniteNumber(value.SequenceNumber)
+        && Number.isInteger(value.SequenceNumber)
+        && value.SequenceNumber > 0
+        && typeof value.ReceivedAt === 'string'
+        && !Number.isNaN(Date.parse(value.ReceivedAt))
+        && isFiniteNumber(value.EngineTemperature)
+        && isFiniteNumber(value.OilPressure)
+}
+
+function isTelemetryAlert(value: unknown): value is TelemetryAlert {
+    if (!isRecord(value)) return false
+    return hasIdentityAndEventTime(value)
+        && isFiniteNumber(value.EngineTemperature)
+        && typeof value.Diagnostics === 'string'
+}
+
+function hasIdentityAndEventTime(value: Record<string, unknown>): boolean {
+    return typeof value.MessageId === 'string'
+        && value.MessageId.length > 0
+        && typeof value.EquipmentId === 'string'
+        && value.EquipmentId.length > 0
+        && typeof value.OccurredAt === 'string'
+        && !Number.isNaN(Date.parse(value.OccurredAt))
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null
+}
+
+function isFiniteNumber(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value)
 }

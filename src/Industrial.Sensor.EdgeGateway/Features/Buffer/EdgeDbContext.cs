@@ -22,12 +22,17 @@ public class EdgeDbContext(DbContextOptions<EdgeDbContext> options) : DbContext(
 {
     // DBSet = table
     public DbSet<TelemetryRecord> TelemetryRecords => Set<TelemetryRecord>();
+    public DbSet<SettledMessage> SettledMessages => Set<SettledMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         var record = modelBuilder.Entity<TelemetryRecord>();
 
-        // Idempotency comes from checking MessageId uniqueness
+        // Live-queue idempotency is backed by this constraint, not only the endpoint pre-check.
         record.HasIndex(r => r.MessageId).IsUnique();
+
+        var settled = modelBuilder.Entity<SettledMessage>();
+        settled.HasKey(r => r.MessageId);
+        settled.HasIndex(r => r.SettledAt);
     }
 }

@@ -24,8 +24,6 @@ processors:
 exporters:
     prometheus:
         endpoint: "0.0.0.0:8889"
-    debug:
-        verbosity: detailed
     otlp/tempo:
         endpoint: "tempo:4317"
         tls:
@@ -40,12 +38,12 @@ service:
         metrics:
             receivers: [otlp]
             processors: [batch]
-            exporters: [prometheus, debug]
+            exporters: [prometheus]
         logs:
             receivers: [otlp]
             processors: [batch]
-            exporters: [otlphttp/loki, debug]
+            exporters: [otlphttp/loki]
         traces:
             receivers: [otlp]
             processors: [batch]
-            exporters: [otlp/tempo, debug]
+            exporters: [otlp/tempo]

@@ -8,4 +8,9 @@
         <Project Path="src/Industrial.Sensor.EdgeGateway/Industrial.Sensor.EdgeGateway.csproj" />
         <Project Path="src/Industrial.Web.Api/Industrial.Web.Api.csproj" />
     </Folder>
+    <Folder Name="/tests/">
+        <Project Path="tests/Industrial.Diagnostics.Tests/Industrial.Diagnostics.Tests.csproj" />
+        <Project Path="tests/Industrial.EdgeGateway.Tests/Industrial.EdgeGateway.Tests.csproj" />
+        <Project Path="tests/Industrial.Ingestion.Tests/Industrial.Ingestion.Tests.csproj" />
+    </Folder>
 </Solution>

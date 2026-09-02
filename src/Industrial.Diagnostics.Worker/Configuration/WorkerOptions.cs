@@ -10,14 +10,17 @@ public class KafkaOptions
     public string BootstrapServers { get; set; } = string.Empty;
 
     [Required(AllowEmptyStrings = false)]
+    [StringLength(200)]
     public string GroupId { get; set; } = string.Empty;
 
     [Required(AllowEmptyStrings = false)]
+    [RegularExpression("^[A-Za-z0-9._-]{1,249}$")]
     public string EventsTopic { get; set; } = string.Empty;
 
     // Web.Api subscribes to this from its own config, so a literal here would leave the
     // dashboard listening to a topic nothing writes to, with no exception anywhere
     [Required(AllowEmptyStrings = false)]
+    [RegularExpression("^[A-Za-z0-9._-]{1,249}$")]
     public string AlertsTopic { get; set; } = string.Empty;
 }
 
@@ -35,6 +38,20 @@ public class GeminiOptions
 public class ConsumerOptions
 {
     public const string Section = "Consumer";
+
+    [Range(1, 3_600)]
+    public int BaseBackoffSeconds { get; set; }
+
+    [Range(1, 3_600)]
+    public int MaxBackoffSeconds { get; set; }
+}
+
+public class OutboxOptions
+{
+    public const string Section = "Outbox";
+
+    [Range(10, 60_000)]
+    public int IdleDelayMs { get; set; }
 
     [Range(1, 3_600)]
     public int BaseBackoffSeconds { get; set; }

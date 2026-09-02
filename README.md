@@ -1,11 +1,13 @@
 # Industrial Platform
 
-Cloud-hosted .NET microservice platform that ingests telemetry from simulated industrial
-equipment and flags anomalies with ML.NET plus an AI-generated diagnosis.
+.NET microservice platform that ingests telemetry from simulated industrial equipment and flags
+anomalies with an online ML.NET detector plus an AI-generated diagnosis. Docker Compose is the
+currently supported runtime; the cloud deployment files are explicitly unfinished.
 
-Readings are written to durable local storage on an edge gateway before they are
-acknowledged, so sensors keep producing through a total cloud outage and the queue drains
-when it ends. `make verify` measures the result: zero lost, zero duplicated.
+The sensor emulator is deliberately best-effort, like a constrained device: it keeps acquiring
+while the network is down and may shed samples when its bounded RAM/retry budget is exhausted.
+Once the edge gateway returns `202`, however, the valid reading is on durable local storage and is
+retained through cloud and gateway outages until the cloud settles it.
 
 # Data flow
 
@@ -36,21 +38,29 @@ diagnostics-worker          │                      web-api
  ├─ ML.NET anomaly check    │                       ├─ consumes telemetry-alerts
  ├─ saves to Postgres       │                       └─ relays live data via SignalR
  ├─ calls Gemini            │                                  │
- └─ produces alerts ────────┘                                  ▼
+ └─ alert outbox publisher ─┘                                  ▼
                                                          web-dashboard
 ```
 
 # Delivery guarantees
 
-The transport is at-least-once. Exactly-once is not something gRPC or Kafka hands you:
-if a connection dies after the server commits but before the ACK arrives, the sender
-cannot know what happened, so it must re-send.
+There are two explicit reliability zones:
 
-What makes that safe is that every reading carries an immutable `MessageId` minted by
-the **sensor** — not by the gateway, not by the API. A unique index on it in both SQLite
-and Postgres turns a duplicate delivery into a no-op.
+- **Before gateway `202`: best-effort.** A full sensor channel drops a new sample; an HTTP send
+  that exhausts its bounded retry policy drops the dequeued sample. Separate metrics count both.
+- **After gateway `202`: durable at-least-once.** The gateway has fsynced the reading to SQLite.
+  Ambiguous gRPC/Kafka failures retry, and the reading is deleted only after ingestion names its
+  `MessageId` accepted or permanently rejected.
 
-> at-least-once delivery + idempotent consumer = effectively-once processing
+Every reading carries an immutable `MessageId` minted by the sensor. SQLite protects live and
+recently settled gateway IDs; Postgres has a unique index for Kafka replay. Duplicate live events
+and alerts are also filtered by a bounded ID window in the dashboard.
+
+> at-least-once delivery + an idempotent sink = effectively-once persisted state
+
+Anomaly publication uses a transactional outbox: the diagnostic row and pending alert commit in
+one Postgres transaction, then a separate worker publishes the alert. A crash after Kafka's ACK can
+still publish twice, which is why the alert keeps the same `MessageId`.
 
 Two clocks are carried end to end so an outage stays measurable:
 
@@ -62,8 +72,9 @@ Two clocks are carried end to end so an outage stays measurable:
 Without `OccurredAt`, readings drained after a 30 minute outage would all claim to have
 happened in the seconds it took to flush the queue.
 
-A monotonic `SequenceNumber` per device makes loss detectable too: if a device produced
-N readings, `MAX(SequenceNumber)` must equal `COUNT(*)`. Any shortfall is data lost.
+A monotonic `SequenceNumber` makes gaps inside an emulator run visible. The emulator resets it on
+restart and can intentionally drop before `202`, so a Postgres-only count is an audit signal—not
+proof of the downstream guarantee or of an unseen tail.
 
 # The demo
 
@@ -73,10 +84,11 @@ make upd                # everything up, queue depth ~0
 make chaos-cloud-down   # kill the cloud; queue climbs, sensors keep producing
 make chaos-gateway-kill # kill the gateway too, mid-outage; buffer survives
 make chaos-cloud-up     # cloud returns; queue drains oldest-first
-make verify             # duplicates = 0, missing = 0, and the lag spike
+make verify             # require drained queue/outbox; report IDs, gaps, and lag
 ```
 
-Watch `edge_queue_depth` and `edge_oldest_message_age_seconds` in Grafana while it runs.
+Watch `edge_queue_depth` and `edge_oldest_message_age_seconds` in Grafana while it runs. The audit
+fails on an empty database, duplicate IDs, a non-empty edge queue, or pending alert outbox rows.
 
 # Install
 
@@ -88,6 +100,8 @@ Watch `edge_queue_depth` and `edge_oldest_message_age_seconds` in Grafana while 
 - [Terraform](https://developer.hashicorp.com/terraform/install)
 
 # Ports
+
+Compose publishes development ports on `127.0.0.1` only.
 
 | service | host port | notes |
 | --- | --- | --- |
@@ -105,3 +119,7 @@ Watch `edge_queue_depth` and `edge_oldest_message_age_seconds` in Grafana while 
 Design notes live in [docs/](docs/) — [Networking](docs/Networking.md),
 [Kafka](docs/Kafka.md), [Observability](docs/Observability.md), [DB](docs/DB),
 [ML](docs/ML). Known gaps and planned work are in [TODO.md](TODO.md).
+
+Docker Compose is the supported runnable/demo path. The Helm, production Tilt, and Terraform files
+are an unfinished prototype; see the ranked production-deployment work in [TODO.md](TODO.md) before
+treating them as deployable infrastructure.

@@ -55,3 +55,7 @@ message TelemetryResponse {
   // 1 byte tag + 1 byte len + 36 byte GUID string = 38 bytes each
   repeated string rejected_message_ids = 3;
 }
+
+// Field numbers in this file are part of the wire contract. Add new fields with new numbers and
+// reserve a number only when its deployed field is removed; the ingestion regression suite pins
+// the current response tags so a future renumber cannot pass CI unnoticed.

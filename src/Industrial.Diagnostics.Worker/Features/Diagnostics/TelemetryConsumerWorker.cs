@@ -7,6 +7,7 @@ using Industrial.Diagnostics.Worker.Configuration;
 using Industrial.Diagnostics.Worker.Features.Diagnostics.ML;
 using Industrial.Diagnostics.Worker.Infrastructure;
 using Industrial.Diagnostics.Worker.Infrastructure.Data;
+using Industrial.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -19,12 +20,18 @@ public class TelemetryConsumerWorker(
     IOptions<KafkaOptions> kafkaOptions,
     IOptions<GeminiOptions> geminiOptions,
     IOptions<ConsumerOptions> consumerOptions,
-    IProducer<string, string> producer,
     ModelEngine modelEngine,
     WorkerMetrics metrics,
     Client gemini
 ) : BackgroundService
 {
+    private static readonly JsonSerializerOptions TelemetryJsonOptions = new()
+    {
+        // Positional-record constructor parameters are the Kafka schema. Treat an absent numeric
+        // field as malformed instead of silently accepting its CLR default of zero.
+        RespectRequiredConstructorParameters = true,
+    };
+
     private int _consecutiveFailures;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -37,8 +44,10 @@ public class TelemetryConsumerWorker(
             GroupId = kafkaConfig.GroupId,
             AutoOffsetReset = AutoOffsetReset.Earliest,
             MetadataMaxAgeMs = 5000,
-            EnableAutoCommit = true,
-            EnableAutoOffsetStore = false,
+            AllowAutoCreateTopics = false,
+            // A record becomes durable in Kafka's consumer-group state only after its Postgres
+            // transaction succeeds (or after the poison policy explicitly discards it).
+            EnableAutoCommit = false,
         };
 
         using var consumer = new ConsumerBuilder<Ignore, string>(config).Build();
@@ -55,19 +64,34 @@ public class TelemetryConsumerWorker(
             while (!stoppingToken.IsCancellationRequested)
             {
                 Activity? activity = null;
+                ConsumeResult<Ignore, string>? consumeResult = null;
 
                 try
                 {
-                    var consumeResult = consumer.Consume(stoppingToken);
-                    if (consumeResult?.Message?.Value == null)
+                    consumeResult = consumer.Consume(stoppingToken);
+                    if (consumeResult is null)
                         continue;
 
-                    TelemetryDto? data;
+                    metrics.Consumed.Add(1);
+
+                    if (consumeResult.Message?.Value is null)
+                    {
+                        logger.LogWarning(
+                            "Discarding Kafka tombstone at {TopicPartitionOffset}.",
+                            consumeResult.TopicPartitionOffset
+                        );
+                        metrics.Discarded.Add(1);
+                        consumer.Commit(consumeResult);
+                        continue;
+                    }
+
+                    TelemetryEnvelope? data;
 
                     try
                     {
-                        data = JsonSerializer.Deserialize<TelemetryDto>(
-                            consumeResult.Message.Value
+                        data = JsonSerializer.Deserialize<TelemetryEnvelope>(
+                            consumeResult.Message.Value,
+                            TelemetryJsonOptions
                         );
                     }
                     catch (JsonException)
@@ -75,14 +99,15 @@ public class TelemetryConsumerWorker(
                         data = null;
                     }
 
-                    if (data is null || !Guid.TryParse(data.MessageId, out var messageId))
+                    if (!TryValidate(data, out var messageId, out var validationError))
                     {
                         logger.LogWarning(
-                            "Discarding unreadable message at offset {Offset}",
-                            consumeResult.Offset
+                            "Discarding poison message at {TopicPartitionOffset}: {Reason}",
+                            consumeResult.TopicPartitionOffset,
+                            validationError
                         );
                         metrics.Discarded.Add(1);
-                        consumer.StoreOffset(consumeResult);
+                        consumer.Commit(consumeResult);
                         continue;
                     }
 
@@ -96,22 +121,46 @@ public class TelemetryConsumerWorker(
                             new("messaging.destination.name", consumeResult.Topic),
                             new("messaging.kafka.offset", consumeResult.Offset.Value),
                             new("messaging.kafka.partition", consumeResult.Partition.Value),
-                            new("equipment.id", data.EquipmentId),
+                            new("equipment.id", data!.EquipmentId),
                         ]
                     );
 
-                    await HandleReadingAsync(data, messageId, stoppingToken);
-                    consumer.StoreOffset(consumeResult);
+                    await HandleReadingAsync(data!, messageId, stoppingToken);
+                    consumer.Commit(consumeResult);
                     _consecutiveFailures = 0;
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     break;
                 }
                 catch (Exception ex)
                 {
                     activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-                    logger.LogError(ex, "Error in consumer loop");
+                    metrics.ProcessingFailures.Add(1);
+
+                    if (consumeResult is not null)
+                    {
+                        try
+                        {
+                            // Consume advances the local fetch position before processing. Rewind
+                            // it explicitly so a later success can never commit past this failure.
+                            consumer.Seek(consumeResult.TopicPartitionOffset);
+                        }
+                        catch (Exception seekException)
+                        {
+                            throw new InvalidOperationException(
+                                $"Could not rewind failed Kafka record {consumeResult.TopicPartitionOffset}; stopping prevents an offset skip.",
+                                new AggregateException(ex, seekException)
+                            );
+                        }
+                    }
+
+                    logger.LogError(
+                        ex,
+                        consumeResult is null
+                            ? "Kafka consume loop failed before returning a record."
+                            : "Error processing Kafka record; it was rewound for retry."
+                    );
                     await BackoffAsync(stoppingToken);
                 }
                 finally
@@ -170,12 +219,12 @@ public class TelemetryConsumerWorker(
     }
 
     private async Task HandleReadingAsync(
-        TelemetryDto data,
+        TelemetryEnvelope data,
         Guid messageId,
         CancellationToken stoppingToken
     )
     {
-        using var db = await contextFactory.CreateDbContextAsync(stoppingToken);
+        await using var db = await contextFactory.CreateDbContextAsync(stoppingToken);
 
         if (await db.TelemetryReadings.AnyAsync(r => r.MessageId == messageId, stoppingToken))
         {
@@ -184,43 +233,106 @@ public class TelemetryConsumerWorker(
             return;
         }
 
-        var result = modelEngine.Inspect((float)data.EngineTemperature);
-
-        logger.LogDebug(
-            "ML - ID: {Id}, Seq: {Seq}, Temp: {Temp:F1}, IsAnomaly: {IsAnomaly}, Score: {Score:F4}, P-Value: {PVal:F4}, Lag: {Lag:F1}s",
-            data.EquipmentId,
-            data.SequenceNumber,
-            data.EngineTemperature,
-            result.IsAnomaly,
-            result.Score,
-            result.PValue,
-            (data.ReceivedAt - data.OccurredAt).TotalSeconds
-        );
-
-        var reading = new TelemetryReading
-        {
-            MessageId = messageId,
-            EquipmentId = data.EquipmentId,
-            SequenceNumber = data.SequenceNumber,
-            OccurredAt = data.OccurredAt,
-            ReceivedAt = data.ReceivedAt,
-            EngineTemperature = data.EngineTemperature,
-            OilPressure = data.OilPressure,
-            IsAnomaly = result.IsAnomaly,
-        };
-
-        db.TelemetryReadings.Add(reading);
+        var modelAdvanced = false;
+        MachineHealthResult result;
 
         try
         {
+            result = await modelEngine.InspectAsync(
+                data.EquipmentId,
+                (float)data.EngineTemperature,
+                async cancellationToken =>
+                {
+                    var history = await db
+                        .TelemetryReadings.Where(r => r.EquipmentId == data.EquipmentId)
+                        // Reconstruct the order in which this stateful detector consumed rows.
+                        // Sensor clocks may jump, so event time is not a safe processing order.
+                        .OrderByDescending(r => r.PersistedAt)
+                        .ThenByDescending(r => r.Id)
+                        .Take(ModelEngine.HistoryLength)
+                        .Select(r => (float)r.EngineTemperature)
+                        .ToListAsync(cancellationToken);
+
+                    history.Reverse();
+                    return history;
+                },
+                stoppingToken
+            );
+            modelAdvanced = true;
+
+            logger.LogDebug(
+                "ML - ID: {Id}, Seq: {Seq}, Temp: {Temp:F1}, IsAnomaly: {IsAnomaly}, Score: {Score:F4}, P-Value: {PVal:F4}, Lag: {Lag:F1}s",
+                data.EquipmentId,
+                data.SequenceNumber,
+                data.EngineTemperature,
+                result.IsAnomaly,
+                result.Score,
+                result.PValue,
+                (data.ReceivedAt - data.OccurredAt).TotalSeconds
+            );
+
+            var reading = new TelemetryReading
+            {
+                MessageId = messageId,
+                EquipmentId = data.EquipmentId,
+                SequenceNumber = data.SequenceNumber,
+                OccurredAt = data.OccurredAt,
+                ReceivedAt = data.ReceivedAt,
+                EngineTemperature = data.EngineTemperature,
+                OilPressure = data.OilPressure,
+                IsAnomaly = result.IsAnomaly,
+            };
+
+            db.TelemetryReadings.Add(reading);
+
+            if (result.IsAnomaly)
+            {
+                var payload = await BuildAnomalyPayloadAsync(data, stoppingToken);
+                db.AlertOutboxMessages.Add(
+                    new AlertOutboxMessage
+                    {
+                        MessageId = messageId,
+                        EquipmentId = data.EquipmentId,
+                        Payload = payload,
+                        TraceParent = Activity.Current?.Id,
+                    }
+                );
+            }
+
+            // EF wraps both inserts in one Postgres transaction. The Kafka offset is committed
+            // only after this returns, and the outbox publisher owns the separate Kafka write.
             await db.SaveChangesAsync(stoppingToken);
         }
         catch (DbUpdateException ex)
             when (ex.InnerException is PostgresException { SqlState: "23505" })
         {
-            logger.LogDebug("Duplicate MessageId {MessageId} rejected by index.", messageId);
-            metrics.RecordDuplicate("index");
-            return;
+            if (modelAdvanced)
+                modelEngine.Invalidate(data.EquipmentId);
+
+            // Several unique indexes exist. Treat the exception as idempotent success only if
+            // another transaction actually persisted this telemetry MessageId.
+            await using var verificationDb = await contextFactory.CreateDbContextAsync(
+                stoppingToken
+            );
+            if (
+                await verificationDb.TelemetryReadings.AnyAsync(
+                    r => r.MessageId == messageId,
+                    stoppingToken
+                )
+            )
+            {
+                logger.LogDebug("Duplicate MessageId {MessageId} rejected by index.", messageId);
+                metrics.RecordDuplicate("index");
+                return;
+            }
+
+            throw;
+        }
+        catch
+        {
+            if (modelAdvanced)
+                modelEngine.Invalidate(data.EquipmentId);
+            throw;
         }
 
         metrics.Persisted.Add(1);
@@ -230,11 +342,13 @@ public class TelemetryConsumerWorker(
         if (result.IsAnomaly)
         {
             metrics.Anomalies.Add(1);
-            await HandleAnomalyAsync(data, stoppingToken);
         }
     }
 
-    private async Task HandleAnomalyAsync(TelemetryDto data, CancellationToken ct)
+    private async Task<string> BuildAnomalyPayloadAsync(
+        TelemetryEnvelope data,
+        CancellationToken ct
+    )
     {
         logger.LogWarning("ANOMALY: {Id}. Requesting AI analysis...", data.EquipmentId);
 
@@ -254,7 +368,8 @@ public class TelemetryConsumerWorker(
                 cancellationToken: aiTimeout.Token
             );
 
-            aiAdvice = res.Text ?? throw new Exception("Could not fetch from AI");
+            var responseText = res.Text ?? throw new Exception("Could not fetch from AI");
+            aiAdvice = responseText.Length <= 8_000 ? responseText : responseText[..8_000];
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
@@ -263,44 +378,76 @@ public class TelemetryConsumerWorker(
             aiAdvice = "AI unavailable";
         }
 
-        var alert = new Message<string, string>
-        {
-            Key = data.EquipmentId,
-            Value = JsonSerializer.Serialize(
-                new
-                {
-                    data.MessageId,
-                    data.EquipmentId,
-                    data.OccurredAt,
-                    data.EngineTemperature,
-                    Diagnostics = aiAdvice,
-                }
-            ),
-        };
-
-        if (Activity.Current?.Id is { } traceparent)
-        {
-            alert.Headers = [new Header("traceparent", Encoding.UTF8.GetBytes(traceparent))];
-        }
-
-        try
-        {
-            await producer.ProduceAsync(kafkaOptions.Value.AlertsTopic, alert, ct);
-        }
-        catch (Exception ex) when (!ct.IsCancellationRequested)
-        {
-            logger.LogError(ex, "Alert for {Id} was not published.", data.EquipmentId);
-            metrics.AlertFailures.Add(1);
-        }
+        return JsonSerializer.Serialize(
+            new TelemetryAlertEnvelope(
+                data.MessageId,
+                data.EquipmentId,
+                data.OccurredAt,
+                data.EngineTemperature,
+                aiAdvice
+            )
+        );
     }
-}
 
-public record TelemetryDto(
-    string MessageId,
-    string EquipmentId,
-    long SequenceNumber,
-    DateTimeOffset OccurredAt,
-    DateTimeOffset ReceivedAt,
-    double EngineTemperature,
-    double OilPressure
-);
+    private static bool TryValidate(
+        TelemetryEnvelope? data,
+        out Guid messageId,
+        out string reason
+    )
+    {
+        messageId = default;
+
+        if (data is null)
+        {
+            reason = "payload is not valid telemetry JSON";
+            return false;
+        }
+
+        if (!Guid.TryParseExact(data.MessageId, "D", out messageId))
+        {
+            reason = "MessageId is not a canonical GUID";
+            return false;
+        }
+
+        if (
+            string.IsNullOrWhiteSpace(data.EquipmentId)
+            || data.EquipmentId.Length > 64
+            || data.EquipmentId != data.EquipmentId.Trim()
+            || !data.EquipmentId.All(IsEquipmentIdCharacter)
+        )
+        {
+            reason = "EquipmentId is missing or too long";
+            return false;
+        }
+
+        if (data.SequenceNumber <= 0)
+        {
+            reason = "SequenceNumber is not positive";
+            return false;
+        }
+
+        if (data.OccurredAt == default || data.ReceivedAt == default)
+        {
+            reason = "an event or cloud timestamp is missing";
+            return false;
+        }
+
+        if (
+            !IsSupportedMeasurement(data.EngineTemperature)
+            || !IsSupportedMeasurement(data.OilPressure)
+        )
+        {
+            reason = "a measurement is non-finite or outside the detector's numeric range";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private static bool IsSupportedMeasurement(double value) =>
+        double.IsFinite(value) && Math.Abs(value) <= float.MaxValue;
+
+    private static bool IsEquipmentIdCharacter(char value) =>
+        char.IsAsciiLetterOrDigit(value) || value is '-' or '_' or '.' or ':';
+}

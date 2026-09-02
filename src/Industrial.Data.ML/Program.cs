@@ -1,5 +1,4 @@
-﻿using System.Globalization;
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using Microsoft.ML;
 using Microsoft.ML.Data;
 using Microsoft.ML.Transforms.TimeSeries;
@@ -8,43 +7,19 @@ using Microsoft.ML.Transforms.TimeSeries;
 string GetSourceDir([CallerFilePath] string path = "") => Path.GetDirectoryName(path)!;
 
 var localDir = GetSourceDir();
-var csvPath = Path.Combine(localDir, "training_data.csv");
 var modelPath = Path.GetFullPath(
     Path.Combine(localDir, "..", "Industrial.Diagnostics.Worker", "model.zip")
 );
 
-var records = 10000;
-var startTime = DateTime.UtcNow.AddDays(-1);
-
-Console.WriteLine($"Generating training data at: {csvPath}");
-
-using (var writer = new StreamWriter(csvPath))
-{
-    writer.WriteLine("Timestamp,EquipmentId,EngineTemperature,OilPressure");
-
-    for (int i = 0; i < records; i++)
-    {
-        var timestamp = startTime.AddSeconds(i * 10).ToString("o");
-        var equipmentId = $"EQ-{Random.Shared.Next(0, 4)}";
-
-        double baseTemp = 85.0;
-        double temp = baseTemp + (Random.Shared.NextDouble() * 15); // Range: 85-100
-        double pressure = 40 + (Random.Shared.NextDouble() * 10);
-
-        writer.WriteLine(
-            $"{timestamp},{equipmentId},{temp.ToString("F2", CultureInfo.InvariantCulture)},{pressure.ToString("F2", CultureInfo.InvariantCulture)}"
-        );
-    }
-}
-
-Console.WriteLine("Training model...");
+Console.WriteLine("Building online IID spike-detector configuration...");
 
 var mlContext = new MLContext();
 
-var data = mlContext.Data.LoadFromTextFile<TelemetryData>(
-    csvPath,
-    hasHeader: true,
-    separatorChar: ','
+// DetectIidSpike is an online statistical detector. Fit validates the schema but does not learn
+// parameters from historical rows, so one representative value is sufficient to build the
+// transformer. The worker warms each equipment's independent state from its recent Postgres rows.
+var schemaData = mlContext.Data.LoadFromEnumerable(
+    new[] { new TelemetryData { EngineTemperature = 90.0f } }
 );
 
 var pipeline = mlContext.Transforms.DetectIidSpike(
@@ -54,9 +29,9 @@ var pipeline = mlContext.Transforms.DetectIidSpike(
     pvalueHistoryLength: 20
 );
 
-var model = pipeline.Fit(data);
+var model = pipeline.Fit(schemaData);
 
-mlContext.Model.Save(model, data.Schema, modelPath);
+mlContext.Model.Save(model, schemaData.Schema, modelPath);
 Console.WriteLine($"✅ Model saved to: {modelPath}");
 
 Console.WriteLine("\n--- Testing Model Locally ---");

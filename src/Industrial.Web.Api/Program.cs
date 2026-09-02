@@ -27,6 +27,15 @@ builder
     .Services.AddOptions<CorsOptions>()
     .Bind(builder.Configuration.GetSection(CorsOptions.Section))
     .ValidateDataAnnotations()
+    .Validate(
+        options =>
+            options.Origins.Length > 0
+            && options.Origins.All(origin =>
+                Uri.TryCreate(origin, UriKind.Absolute, out var uri)
+                && uri.Scheme is "http" or "https"
+            ),
+        "CORS:AllowedOrigins must contain one or more absolute HTTP(S) origins."
+    )
     .ValidateOnStart();
 
 // Needed during registration, before the container exists.
@@ -75,6 +84,7 @@ var app = builder.Build();
 
 app.UseCors();
 app.MapHub<TelemetryHub>("/telemetryHub");
+app.MapGet("/health", () => Results.Ok());
 
 app.Run();
 
@@ -101,10 +111,14 @@ public class KafkaSignalRWorker(
         var config = new ConsumerConfig
         {
             BootstrapServers = kafka.BootstrapServers,
-            GroupId = kafka.GroupId,
+            // SignalR clients are local to this process. A shared group would split Kafka
+            // partitions across replicas and each browser would see only the subset assigned to
+            // its pod, so every replica deliberately gets its own broadcast subscription.
+            GroupId = $"{kafka.GroupId}-{Environment.MachineName}",
             // Only real-time data for dashboard
             AutoOffsetReset = AutoOffsetReset.Latest,
             EnableAutoCommit = true,
+            AllowAutoCreateTopics = false,
         };
 
         using var consumer = new ConsumerBuilder<string, string>(config).Build();
@@ -148,7 +162,7 @@ public class KafkaSignalRWorker(
 
                     metrics.RecordRelayed(result.Topic);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     break;
                 }

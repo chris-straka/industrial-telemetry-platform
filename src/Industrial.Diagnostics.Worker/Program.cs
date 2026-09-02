@@ -31,6 +31,11 @@ builder
     .ValidateDataAnnotations()
     .ValidateOnStart();
 builder
+    .Services.AddOptions<OutboxOptions>()
+    .Bind(builder.Configuration.GetSection(OutboxOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+builder
     .Services.AddOptions<GeminiOptions>()
     .Bind(builder.Configuration.GetSection(GeminiOptions.Section))
     .ValidateDataAnnotations()
@@ -86,7 +91,7 @@ builder.Services.AddSingleton(sp =>
         Acks = Acks.All,
         EnableIdempotence = true,
         MessageTimeoutMs = 20_000,
-        AllowAutoCreateTopics = true,
+        AllowAutoCreateTopics = false,
         MetadataMaxAgeMs = 5000,
     };
     return new ProducerBuilder<string, string>(config)
@@ -95,21 +100,16 @@ builder.Services.AddSingleton(sp =>
 });
 
 // Setup AI features
-builder.Services.AddSingleton(new ModelEngine("model.zip"));
+builder.Services.AddSingleton(
+    new ModelEngine(Path.Combine(AppContext.BaseDirectory, "model.zip"))
+);
 builder.Services.AddSingleton(new Client(apiKey: gemini.ApiKey));
 
 // A hosted service, so the consume loop follows the app lifecycle without blocking it.
 builder.Services.AddHostedService<TelemetryConsumerWorker>();
+builder.Services.AddHostedService<AlertOutboxPublisherWorker>();
 
 var app = builder.Build();
-
-// Cleanup Kafka producer
-app.Lifetime.ApplicationStopping.Register(() =>
-{
-    var producer = app.Services.GetRequiredService<IProducer<string, string>>();
-    producer.Flush(TimeSpan.FromSeconds(5));
-    producer.Dispose();
-});
 
 // Migrate on startup for dev
 if (app.Environment.IsDevelopment())
@@ -142,5 +142,7 @@ if (app.Environment.IsDevelopment())
         }
     }
 }
+
+app.MapGet("/health", () => Results.Ok());
 
 app.Run();

@@ -1,0 +1,57 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore .NET dependencies
+        run: dotnet restore IndustrialPlatform.slnx
+
+      - name: Build .NET solution
+        run: dotnet build IndustrialPlatform.slnx --configuration Release --no-restore --warnaserror
+
+      - name: Restore local .NET tools
+        run: dotnet tool restore
+
+      - name: Verify EF migration snapshot
+        run: dotnet ef migrations has-pending-model-changes --project src/Industrial.Diagnostics.Worker --configuration Release --no-build --no-color
+
+      - name: Run regression tests
+        run: dotnet test IndustrialPlatform.slnx --configuration Release --no-build --collect:"XPlat Code Coverage"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/Industrial.Web.Dashboard/package-lock.json
+
+      - name: Install dashboard dependencies
+        working-directory: src/Industrial.Web.Dashboard
+        run: npm ci
+
+      - name: Lint dashboard
+        working-directory: src/Industrial.Web.Dashboard
+        run: npm run lint
+
+      - name: Build dashboard
+        working-directory: src/Industrial.Web.Dashboard
+        run: npm run build
+
+      - name: Validate Compose model
+        run: docker compose config --quiet
+        env:
+          GEMINI_API_KEY: ci-config-validation-only

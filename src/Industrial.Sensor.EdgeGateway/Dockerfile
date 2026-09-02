@@ -1,10 +1,12 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
-WORKDIR /app
-COPY ["src/Industrial.Sensor.EdgeGateway/Industrial.Sensor.EdgeGateway.csproj", "Industrial.Sensor.EdgeGateway/"]
-RUN dotnet restore "Industrial.Sensor.EdgeGateway/Industrial.Sensor.EdgeGateway.csproj"
+WORKDIR /src
+COPY ["Directory.Build.props", "./"]
+COPY ["src/Industrial.Sensor.EdgeGateway/Industrial.Sensor.EdgeGateway.csproj", "src/Industrial.Sensor.EdgeGateway/"]
+COPY ["src/Industrial.Shared/Industrial.Shared.csproj", "src/Industrial.Shared/"]
+COPY ["src/Protos/telemetry.proto", "src/Protos/"]
+RUN dotnet restore "src/Industrial.Sensor.EdgeGateway/Industrial.Sensor.EdgeGateway.csproj"
 COPY . .
-WORKDIR "/app/src/Industrial.Sensor.EdgeGateway"
-RUN dotnet publish -c Release -o /app/publish
+RUN dotnet publish "src/Industrial.Sensor.EdgeGateway/Industrial.Sensor.EdgeGateway.csproj" -c Release -o /app/publish --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app

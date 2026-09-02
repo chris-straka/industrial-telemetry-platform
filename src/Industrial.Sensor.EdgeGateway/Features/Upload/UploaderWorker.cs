@@ -16,7 +16,8 @@ namespace Industrial.Sensor.EdgeGateway.Features.Upload;
 /// <remarks>
 /// This loop is independent from acquisition (receiver endpoint)
 ///
-/// Delivery is ALO, ambiguous failures re-send, and cloud dedupes via MessageId (EffO)
+/// Delivery is ALO and ambiguous failures re-send. Diagnostics/Postgres dedupes MessageId, while
+/// the live dashboard keeps its own bounded duplicate window.
 /// We send oldest-first ID and delete only the readings the cloud named in its response
 ///
 /// Doesn't use gRPC's built-in retry policy
@@ -26,6 +27,8 @@ public class UploaderWorker(
     IServiceScopeFactory scopeFactory,
     EdgeMetrics metrics,
     BufferDepth bufferDepth,
+    BufferMutationGate mutationGate,
+    IOptions<BufferOptions> bufferOptions,
     IOptions<UploaderOptions> uploaderOptions,
     ILogger<UploaderWorker> logger
 ) : BackgroundService
@@ -57,15 +60,16 @@ public class UploaderWorker(
         uploaderOptions.Value.UploadTimeoutSeconds
     );
 
+    private readonly TimeSpan _settledIdRetention = TimeSpan.FromHours(
+        bufferOptions.Value.SettledIdRetentionHours
+    );
+
     // Failures since the last accepted batch (resets to 0)
     private int _consecutiveFailures;
 
     // What decides whether an outage logs loudly or quietly
     private int _consecutiveUnreachable;
 
-    // Remaining passes before refreshing depth level - COUNT(*)
-    private int _passesUntilDepthResync;
-    private const int DepthResyncInterval = 100;
     #endregion
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -132,13 +136,44 @@ public class UploaderWorker(
                     .Select(p => p.Record)
                     .ToList();
 
-                db.TelemetryRecords.RemoveRange(settledRows);
-                await db.SaveChangesAsync(stoppingToken);
+                await mutationGate.EnterAsync(stoppingToken);
+                try
+                {
+                    // The marker insert and queue delete are one transaction. The receiver holds
+                    // the same gate while checking both tables, so a delayed sensor retry cannot
+                    // resurrect a MessageId in the gap between these two durable state changes.
+                    await using var transaction = await db.Database.BeginTransactionAsync(
+                        stoppingToken
+                    );
+
+                    var settledAt = DateTimeOffset.UtcNow;
+                    db.SettledMessages.AddRange(
+                        settledRows.Select(row => new SettledMessage
+                        {
+                            MessageId = row.MessageId,
+                            SettledAt = settledAt,
+                        })
+                    );
+                    db.TelemetryRecords.RemoveRange(settledRows);
+                    await db.SaveChangesAsync(stoppingToken);
+
+                    // Retention bounds the idempotency ledger. This indexed delete is cheap when
+                    // nothing has expired and shares the current transaction when rows have.
+                    var cutoff = settledAt - _settledIdRetention;
+                    await db
+                        .SettledMessages.Where(row => row.SettledAt < cutoff)
+                        .ExecuteDeleteAsync(stoppingToken);
+
+                    await transaction.CommitAsync(stoppingToken);
+                    bufferDepth.Release(settledRows.Count);
+                }
+                finally
+                {
+                    mutationGate.Exit();
+                }
 
                 metrics.Uploaded.Add(result.AcceptedIds.Count);
                 metrics.Rejected.Add(result.RejectedIds.Count);
-
-                bufferDepth.Decrement(settledRows.Count);
 
                 _consecutiveFailures = 0;
                 _consecutiveUnreachable = 0;
@@ -186,6 +221,9 @@ public class UploaderWorker(
         CancellationToken cancellationToken
     )
     {
+        var startedAt = Stopwatch.GetTimestamp();
+        var outcome = "local_failure";
+
         // Gateway returns 202 and breaks incoming sensor traces
         // This fans those traces in so the new batch trace can ref them
         var links = BuildTraceLinks(batch);
@@ -223,24 +261,51 @@ public class UploaderWorker(
 
             // TelemetryResponse isn't disposable, I couldn't await + using
             var response = await call.ResponseAsync;
+            outcome = "answered";
 
             activity?.SetTag("edge.batch.accepted", response.AcceptedMessageIds.Count);
             activity?.SetTag("edge.batch.rejected", response.RejectedMessageIds.Count);
 
+            var sentIds = batch
+                .Select(item => item.Record.MessageId)
+                .ToHashSet(StringComparer.Ordinal);
+            var acceptedIds = response.AcceptedMessageIds.ToHashSet(StringComparer.Ordinal);
+            var rejectedIds = response.RejectedMessageIds.ToHashSet(StringComparer.Ordinal);
+
+            if (
+                !acceptedIds.IsSubsetOf(sentIds)
+                || !rejectedIds.IsSubsetOf(sentIds)
+                || acceptedIds.Overlaps(rejectedIds)
+            )
+            {
+                outcome = "malformed_response";
+                activity?.SetStatus(
+                    ActivityStatusCode.Error,
+                    "Cloud response contained an unknown or contradictory MessageId."
+                );
+                metrics.RecordUploadFailure("malformed_response");
+                logger.LogError(
+                    "Cloud returned an invalid acknowledgement set. No local rows will be deleted."
+                );
+                return UploadResult.Failed(UploadOutcome.Malformed);
+            }
+
             return new UploadResult(
                 UploadOutcome.Answered,
-                response.AcceptedMessageIds,
-                response.RejectedMessageIds,
+                [.. acceptedIds],
+                [.. rejectedIds],
                 response.Success
             );
         }
         catch (RpcException ex) when (IsShutdownCancellation(ex.StatusCode, cancellationToken))
         {
+            outcome = "cancelled";
             // gRPC reports cancellation as an RpcException, we change it to fit our contract
             throw new OperationCanceledException(cancellationToken);
         }
         catch (RpcException ex) when (IsBatchContentError(ex.StatusCode))
         {
+            outcome = "malformed";
             // Cloud refuses call based on its content
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             metrics.RecordUploadFailure("malformed");
@@ -253,6 +318,7 @@ public class UploaderWorker(
         }
         catch (RpcException ex) when (IsCallerRefused(ex.StatusCode))
         {
+            outcome = "refused";
             // Cloud refuses caller (only a config change can fix)
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             metrics.RecordUploadFailure("refused");
@@ -265,6 +331,7 @@ public class UploaderWorker(
         }
         catch (RpcException ex)
         {
+            outcome = "unreachable";
             // A dropped connection or an expired deadline lands here
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             metrics.RecordUploadFailure("unreachable");
@@ -280,6 +347,13 @@ public class UploaderWorker(
                 );
 
             return UploadResult.Failed(UploadOutcome.Unreachable);
+        }
+        finally
+        {
+            metrics.RecordUploadDuration(
+                Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds,
+                outcome
+            );
         }
     }
 
@@ -323,22 +397,14 @@ public class UploaderWorker(
             .ToList();
 
     /// <summary>
-    /// Updates buffer depth
+    /// Updates gauges derived from the oldest queued row.
     /// </summary>
     /// <remarks>
-    /// COUNT(*) walks every row, we can't run that on every pass
+    /// BufferDepth is initialized from COUNT(*) once at startup and then maintained by atomic
+    /// reservations. Recounting here would race those reservations and overwrite a newer value.
     /// </remarks>
     private async Task RefreshGaugesAsync(EdgeDbContext db, CancellationToken cancellationToken)
     {
-        _passesUntilDepthResync--;
-
-        if (_passesUntilDepthResync <= 0)
-        {
-            var newDepth = await db.TelemetryRecords.CountAsync(cancellationToken);
-            bufferDepth.SetTo(newDepth);
-            _passesUntilDepthResync = DepthResyncInterval;
-        }
-
         if (bufferDepth.Current == 0)
         {
             metrics.NoReadingsBuffered();

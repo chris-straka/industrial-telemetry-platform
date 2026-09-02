@@ -10,12 +10,15 @@ public class KafkaOptions
     public string BootstrapServers { get; set; } = string.Empty;
 
     [Required(AllowEmptyStrings = false)]
+    [StringLength(200)]
     public string GroupId { get; set; } = string.Empty;
 
     [Required(AllowEmptyStrings = false)]
+    [RegularExpression("^[A-Za-z0-9._-]{1,249}$")]
     public string EventsTopic { get; set; } = string.Empty;
 
     [Required(AllowEmptyStrings = false)]
+    [RegularExpression("^[A-Za-z0-9._-]{1,249}$")]
     public string AlertsTopic { get; set; } = string.Empty;
 }
 

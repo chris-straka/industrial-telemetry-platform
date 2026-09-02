@@ -20,13 +20,20 @@ public class BufferOptions
 
     [Range(1, 100_000_000)]
     public int MaxDepth { get; set; }
+
+    // A retry after this window is treated as a new submission. The sensor's HTTP retry policy
+    // is measured in seconds; retaining markers for hours leaves ample ambiguity coverage while
+    // keeping this transient edge database bounded.
+    [Range(1, 8_760)]
+    public int SettledIdRetentionHours { get; set; }
 }
 
 public class UploaderOptions
 {
     public const string Section = "Uploader";
 
-    [Range(1, 10_000)]
+    // Field bounds make 1,000 readings comfortably smaller than gRPC's default 4 MiB limit.
+    [Range(1, 1_000)]
     public int BatchSize { get; set; }
 
     [Range(1, 60_000)]

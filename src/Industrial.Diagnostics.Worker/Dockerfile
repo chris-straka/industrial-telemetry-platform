@@ -1,12 +1,13 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
-WORKDIR /app
+WORKDIR /src
 
+COPY ["Directory.Build.props", "./"]
 COPY ["src/Industrial.Diagnostics.Worker/Industrial.Diagnostics.Worker.csproj", "src/Industrial.Diagnostics.Worker/"]
+COPY ["src/Industrial.Shared/Industrial.Shared.csproj", "src/Industrial.Shared/"]
 RUN dotnet restore "src/Industrial.Diagnostics.Worker/Industrial.Diagnostics.Worker.csproj"
 
 COPY . .
-WORKDIR "/app/src/Industrial.Diagnostics.Worker"
-RUN dotnet publish -c Release -o /out
+RUN dotnet publish "src/Industrial.Diagnostics.Worker/Industrial.Diagnostics.Worker.csproj" -c Release -o /out --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app

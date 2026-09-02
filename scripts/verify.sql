@@ -1,11 +1,11 @@
--- End-to-end proof for the store-and-forward demo.
+-- End-to-end audit for the store-and-forward demo.
 --   make verify
 --
--- Three numbers have to hold after you kill the cloud, kill the gateway, and
--- bring both back:
---   duplicates = 0   the unique index on MessageId did its job
---   missing    = 0   no gaps in any device's sequence, so nothing was lost
---   max_lag          how far behind event time we fell (this is the outage, measured)
+-- This can prove that Postgres has no duplicate MessageIds, the gateway queue drained, and the
+-- alert outbox drained. It reports sequence gaps, but a Postgres-only query cannot tell whether a
+-- gap was an intentional best-effort sensor drop before 202 or downstream loss after 202.
+
+\set ON_ERROR_STOP on
 
 \echo '== totals: duplicates must be 0 =='
 SELECT COUNT(*)                                          AS ingested,
@@ -14,22 +14,45 @@ SELECT COUNT(*)                                          AS ingested,
 FROM "TelemetryReadings";
 
 \echo ''
-\echo '== per device: missing must be 0 =='
--- Sequence numbers start at 1 and are monotonic per device, so a device that
--- produced N readings must have max_seq = N. Any shortfall is lost data.
---
--- MANUAL-% is excluded because the REST door has no sequence to assign and sends 0
--- (see IngestTelemetryEndpoint). Those rows raise COUNT(*) without raising the max,
--- so one curl would drive `missing` negative and make this check report a loss that
--- never happened. Curl with a MANUAL- id and the durability numbers stay meaningful.
+\echo '== sequence gaps by inferred emulator run (reported, not treated as downstream proof) =='
+-- The emulator restarts SequenceNumber at 1. A non-increasing value in event-time order starts a
+-- new inferred run, so an old run cannot hide gaps in a newer one as MAX(seq)-COUNT(*) did.
+WITH ordered AS (
+    SELECT *,
+           LAG("SequenceNumber") OVER (
+               PARTITION BY "EquipmentId"
+               ORDER BY "OccurredAt", "PersistedAt", "MessageId"
+           ) AS previous_sequence
+    FROM "TelemetryReadings"
+    WHERE "SequenceNumber" > 0
+      AND "EquipmentId" NOT LIKE 'MANUAL-%'
+), marked AS (
+    SELECT *,
+           CASE
+               WHEN previous_sequence IS NULL OR "SequenceNumber" <= previous_sequence THEN 1
+               ELSE 0
+           END AS begins_run
+    FROM ordered
+), runs AS (
+    SELECT *,
+           SUM(begins_run) OVER (
+               PARTITION BY "EquipmentId"
+               ORDER BY "OccurredAt", "PersistedAt", "MessageId"
+           ) AS run_number
+    FROM marked
+)
 SELECT "EquipmentId",
-       COUNT(*)                                          AS rows,
-       MAX("SequenceNumber")                             AS max_seq,
-       MAX("SequenceNumber") - COUNT(*)                   AS missing
-FROM "TelemetryReadings"
-WHERE "EquipmentId" NOT LIKE 'MANUAL-%'
-GROUP BY "EquipmentId"
-ORDER BY 1;
+       run_number,
+       COUNT(*) AS rows,
+       MIN("SequenceNumber") AS min_seq,
+       MAX("SequenceNumber") AS max_seq,
+       MAX("SequenceNumber") - MIN("SequenceNumber") + 1
+           - COUNT(DISTINCT "SequenceNumber") AS gaps_inside_observed_range
+FROM runs
+GROUP BY "EquipmentId", run_number
+ORDER BY "EquipmentId", run_number;
+
+\echo 'Tail loss after the last observed sequence cannot be inferred without an origin-side run total.'
 
 \echo ''
 \echo '== end-to-end lag (ReceivedAt - OccurredAt) =='
@@ -46,3 +69,30 @@ FROM "TelemetryReadings";
 SELECT COUNT(*) FILTER (WHERE "IsAnomaly") AS anomalies,
        COUNT(*)                            AS total
 FROM "TelemetryReadings";
+
+\echo ''
+\echo '== alert outbox: pending must be 0 after the system catches up =='
+SELECT COUNT(*) FILTER (WHERE "PublishedAt" IS NULL) AS pending,
+       COUNT(*) FILTER (WHERE "PublishedAt" IS NOT NULL) AS published
+FROM "AlertOutboxMessages";
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM "TelemetryReadings") THEN
+        RAISE EXCEPTION 'verification has no telemetry rows; an empty database is not a pass';
+    END IF;
+
+    IF (
+        SELECT COUNT(*) - COUNT(DISTINCT "MessageId")
+        FROM "TelemetryReadings"
+    ) <> 0 THEN
+        RAISE EXCEPTION 'duplicate MessageIds found in Postgres';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM "AlertOutboxMessages" WHERE "PublishedAt" IS NULL
+    ) THEN
+        RAISE EXCEPTION 'the alert outbox has pending rows';
+    END IF;
+END;
+$$;

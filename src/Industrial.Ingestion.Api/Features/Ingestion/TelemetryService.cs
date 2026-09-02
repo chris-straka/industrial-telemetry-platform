@@ -4,6 +4,7 @@ using Confluent.Kafka;
 using FluentValidation;
 using Grpc.Core;
 using Industrial.Ingestion.Api.Configuration;
+using Industrial.Shared;
 using Microsoft.Extensions.Options;
 
 namespace Industrial.Ingestion.Api.Features.Ingestion;
@@ -18,6 +19,7 @@ public class TelemetryService(
     ILogger<TelemetryService> logger
 ) : TelemetryIngestion.TelemetryIngestionBase
 {
+    private const int MaxBatchSize = 1_000;
     private readonly string _topic = kafkaOptions.Value.EventsTopic;
 
     public override async Task<TelemetryResponse> UploadTelemetry(
@@ -25,11 +27,23 @@ public class TelemetryService(
         ServerCallContext context
     )
     {
+        if (request.Readings.Count > MaxBatchSize)
+        {
+            throw new RpcException(
+                new Status(
+                    StatusCode.InvalidArgument,
+                    $"A batch cannot contain more than {MaxBatchSize} readings."
+                )
+            );
+        }
+
         var accepted = new List<string>(request.Readings.Count);
         var rejected = new List<string>();
         var inflight = new List<(string MessageId, Task<DeliveryResult<string, string>> Delivery)>(
             request.Readings.Count
         );
+        var undelivered = 0;
+        Exception? firstFailure = null;
 
         foreach (var reading in request.Readings)
         {
@@ -50,16 +64,15 @@ public class TelemetryService(
 
             try
             {
-                var payload = new
-                {
+                var payload = new TelemetryEnvelope(
                     reading.MessageId,
                     reading.EquipmentId,
                     reading.SequenceNumber,
-                    OccurredAt = reading.OccurredAt.ToDateTimeOffset(),
-                    ReceivedAt = DateTimeOffset.UtcNow,
+                    reading.OccurredAt.ToDateTimeOffset(),
+                    DateTimeOffset.UtcNow,
                     reading.EngineTemperature,
-                    reading.OilPressure,
-                };
+                    reading.OilPressure
+                );
 
                 var kafkaMsg = new Message<string, string>
                 {
@@ -84,28 +97,48 @@ public class TelemetryService(
                     )
                 );
             }
+            catch (OperationCanceledException)
+                when (context.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
+                // Validation failures are permanent and are the only readings named as rejected.
+                // Producer failures are transient or internal: leaving this ID unnamed tells the
+                // gateway to retain it and retry instead of deleting the only durable copy.
                 logger.LogError(
                     ex,
-                    "Rejecting reading {MessageId} from {EquipmentId}: it cannot be produced.",
+                    "Could not queue reading {MessageId} from {EquipmentId}; gateway will retry it.",
                     reading.MessageId,
                     reading.EquipmentId
                 );
-                rejected.Add(reading.MessageId);
+                undelivered++;
+                firstFailure ??= ex;
             }
         }
-
-        var undelivered = 0;
-        var faulted = false;
-        Exception? firstFailure = null;
 
         foreach (var (messageId, delivery) in inflight)
         {
             try
             {
-                await delivery;
-                accepted.Add(messageId);
+                var result = await delivery;
+                if (result.Status == PersistenceStatus.Persisted)
+                {
+                    accepted.Add(messageId);
+                }
+                else
+                {
+                    // PossiblyPersisted is deliberately ambiguous. Naming it accepted would let
+                    // the gateway delete its copy without a durable broker acknowledgement.
+                    undelivered++;
+                    firstFailure ??= new KafkaException(
+                        new Error(
+                            ErrorCode.Local_MsgTimedOut,
+                            $"Kafka reported {result.Status} for {messageId}."
+                        )
+                    );
+                }
             }
             catch (OperationCanceledException)
                 when (context.CancellationToken.IsCancellationRequested)
@@ -114,7 +147,6 @@ public class TelemetryService(
             }
             catch (Exception ex)
             {
-                faulted = true;
                 undelivered++;
                 firstFailure ??= ex;
             }
@@ -125,9 +157,9 @@ public class TelemetryService(
         {
             logger.LogError(
                 firstFailure,
-                "{Undelivered} of {Inflight} deliveries failed. Gateway will re-send them.",
+                "{Undelivered} of {Sent} readings were not durably delivered. Gateway will re-send them.",
                 undelivered,
-                inflight.Count
+                request.Readings.Count
             );
         }
 
@@ -136,13 +168,13 @@ public class TelemetryService(
             accepted.Count,
             rejected.Count,
             request.Readings.Count,
-            faulted
+            undelivered > 0
         );
 
         // Success means we reached the end of the batch, not that we took any of it
         return new TelemetryResponse
         {
-            Success = !faulted,
+            Success = undelivered == 0,
             AcceptedMessageIds = { accepted },
             RejectedMessageIds = { rejected },
         };

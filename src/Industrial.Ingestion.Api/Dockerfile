@@ -1,10 +1,12 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
-WORKDIR /app
-COPY ["src/Industrial.Ingestion.Api/Industrial.Ingestion.Api.csproj", "Industrial.Ingestion.Api/"]
-RUN dotnet restore "Industrial.Ingestion.Api/Industrial.Ingestion.Api.csproj"
+WORKDIR /src
+COPY ["Directory.Build.props", "./"]
+COPY ["src/Industrial.Ingestion.Api/Industrial.Ingestion.Api.csproj", "src/Industrial.Ingestion.Api/"]
+COPY ["src/Industrial.Shared/Industrial.Shared.csproj", "src/Industrial.Shared/"]
+COPY ["src/Protos/telemetry.proto", "src/Protos/"]
+RUN dotnet restore "src/Industrial.Ingestion.Api/Industrial.Ingestion.Api.csproj"
 COPY . .
-WORKDIR "/app/src/Industrial.Ingestion.Api"
-RUN dotnet publish -c Release -o /app/publish
+RUN dotnet publish "src/Industrial.Ingestion.Api/Industrial.Ingestion.Api.csproj" -c Release -o /app/publish --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
