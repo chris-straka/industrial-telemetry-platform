@@ -10,18 +10,12 @@ consequences that override normal instincts:
 1. **Comments are load-bearing.** Long explanatory comments are deliberate teaching
    notes, not clutter. Never strip or condense them. If a comment is factually wrong,
    correct the claim in place and keep the surrounding reasoning.
-2. **Whatever is built, the rejected alternative gets written down — where it can be
-   read.** "Simple" is not automatically right and neither is "clever"; what matters is
-   being able to say what else was on the table and why this won. Placement:
-   - Default: on a declaration (type, member, field), one or two sentences naming the
-     alternative and the single reason it lost. Write it as plain prose — no "Rejected:"
-     label, no compressed jargon, and spell the noun out ("Microsoft.Data.Sqlite", not
-     "a driver").
-   - Inside a method body: only when that specific line *is* the decision, and only if it
-     stays that short.
-   - Anything longer, or that has to sketch how the alternative would have worked, is a
-     `docs/` note instead. A hypothetical implementation spelled out in a comment reads
-     like a description of the code that is actually there.
+2. **Rejected alternatives go in `docs/`, not in the code.** "Simple" is not automatically
+   right and neither is "clever"; what matters is being able to say what else was on the
+   table and why this won — but that argument belongs in a design note, where it has room
+   to be made properly. Do not add a comment naming an alternative to a declaration or a
+   method body. A code comment says what the code does and why it is safe; the `docs/`
+   note says what else was considered.
 
    The reason given has to survive scrutiny on its own terms — do not credit an
    alternative with a property it would not have had.

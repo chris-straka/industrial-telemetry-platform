@@ -6,7 +6,7 @@ namespace Industrial.Diagnostics.Worker.Features.Diagnostics.ML;
 
 public class TelemetryData
 {
-    // The trainer sees this as Column 2
+    // Trainer sees this as Column 2
     [LoadColumn(2)]
     public float EngineTemperature { get; set; }
 }
@@ -34,6 +34,8 @@ public class ModelEngine
         );
     }
 
+    // Scores one reading against the detector's running window.
+    // It's stateful in that each call advances the window as well
     public MachineHealthResult Inspect(float temp)
     {
         var p = _predictionEngine.Predict(new TelemetryData { EngineTemperature = temp });

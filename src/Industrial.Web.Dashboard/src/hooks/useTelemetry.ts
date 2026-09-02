@@ -16,7 +16,11 @@ export function useTelemetry(
     })
 
     useEffect(() => {
-        const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5090'
+        const apiUrl = import.meta.env.VITE_API_URL
+        if (!apiUrl) {
+            throw new Error('VITE_API_URL is not set. Vite bakes it in at build time.')
+        }
+
         const connection = new HubConnectionBuilder()
             .withUrl(`${apiUrl}/telemetryHub`)
             .configureLogging(LogLevel.Information)
@@ -24,15 +28,28 @@ export function useTelemetry(
             .build()
 
         connection.on('telemetry_events', (payload: string) => {
-            eventRef.current?.(JSON.parse(payload))
+            const parsed = parse<TelemetryEvent>(payload)
+            if (parsed) eventRef.current?.(parsed)
         })
 
         connection.on('telemetry_alerts', (payload: string) => {
-            alertRef.current?.(JSON.parse(payload))
+            const parsed = parse<TelemetryAlert>(payload)
+            if (parsed) alertRef.current?.(parsed)
         })
 
         connection.start().catch(console.error)
 
         return () => { connection.stop() }
     }, []) // Empty array = One connection for life of component
+}
+
+// A throw inside a SignalR handler kills the whole connection, so one bad payload
+// would take the dashboard down until it reconnects.
+function parse<T>(payload: string): T | null {
+    try {
+        return JSON.parse(payload) as T
+    } catch {
+        console.error('Discarding unreadable payload', payload)
+        return null
+    }
 }

@@ -11,7 +11,8 @@ function App() {
   const [alerts, setAlerts] = useState<TelemetryAlert[]>([])
 
   const handleEvent = useCallback((event: TelemetryEvent) => {
-    setEvents((prev) => [...prev.slice(-19), event]) // Keep last 20
+    // Shared across every device, so this is ~50 points each at 4 devices.
+    setEvents((prev) => [...prev.slice(-199), event])
   }, [])
 
   const handleAlert = useCallback((alert: TelemetryAlert) => {

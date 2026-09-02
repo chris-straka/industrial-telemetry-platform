@@ -1,6 +1,9 @@
+using System.Diagnostics;
+using System.Text;
 using Confluent.Kafka;
 using Industrial.Shared;
 using Industrial.Web.Api.Configuration;
+using Industrial.Web.Api.Infrastructure;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Options;
 using OpenTelemetry.Logs;
@@ -45,14 +48,17 @@ builder
         metrics
             .AddAspNetCoreInstrumentation()
             .AddRuntimeInstrumentation()
+            .AddMeter(WebMetrics.MeterName)
             .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     )
     .WithTracing(tracing =>
         tracing
             .AddAspNetCoreInstrumentation()
+            .AddSource(WebTracing.SourceName)
             .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     );
 
+builder.Services.AddSingleton<WebMetrics>();
 builder.Services.AddSignalR();
 builder.Services.AddCors(options =>
 {
@@ -84,6 +90,7 @@ public class TelemetryHub : Hub<ITelemetryClient> { }
 public class KafkaSignalRWorker(
     IOptions<KafkaOptions> kafkaOptions,
     IHubContext<TelemetryHub, ITelemetryClient> hubContext,
+    WebMetrics metrics,
     ILogger<KafkaSignalRWorker> logger
 ) : BackgroundService
 {
@@ -105,33 +112,90 @@ public class KafkaSignalRWorker(
 
         logger.LogInformation("SignalR-Kafka Bridge Started. Listening for events...");
 
-        while (!stoppingToken.IsCancellationRequested)
+        try
         {
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
-                var result = consumer.Consume(stoppingToken);
-                if (result?.Message == null)
-                    continue;
+                Activity? activity = null;
 
-                // Use the Topic name to decide which method to call
-                if (result.Topic == kafka.EventsTopic)
+                try
                 {
-                    await hubContext.Clients.All.telemetry_events(result.Message.Value);
+                    var result = consumer.Consume(stoppingToken);
+                    if (result?.Message == null)
+                        continue;
+
+                    activity = WebTracing.Source.StartActivity(
+                        "telemetry.relay",
+                        ActivityKind.Consumer,
+                        ReadTraceContext(result.Message.Headers),
+                        tags:
+                        [
+                            new("messaging.system", "kafka"),
+                            new("messaging.destination.name", result.Topic),
+                            new("messaging.kafka.offset", result.Offset.Value),
+                        ]
+                    );
+
+                    // Use the Topic name to decide which method to call
+                    if (result.Topic == kafka.EventsTopic)
+                    {
+                        await hubContext.Clients.All.telemetry_events(result.Message.Value);
+                    }
+                    else if (result.Topic == kafka.AlertsTopic)
+                    {
+                        await hubContext.Clients.All.telemetry_alerts(result.Message.Value);
+                    }
+
+                    metrics.RecordRelayed(result.Topic);
                 }
-                else if (result.Topic == kafka.AlertsTopic)
+                catch (OperationCanceledException)
                 {
-                    await hubContext.Clients.All.telemetry_alerts(result.Message.Value);
+                    break;
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error relaying Kafka to SignalR");
-                await Task.Delay(1000, stoppingToken);
+                catch (Exception ex)
+                {
+                    activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                    metrics.RelayFailures.Add(1);
+                    logger.LogError(ex, "Error relaying Kafka to SignalR");
+                    await SafeDelayAsync(TimeSpan.FromSeconds(1), stoppingToken);
+                }
+                finally
+                {
+                    activity?.Dispose();
+                }
             }
         }
+        finally
+        {
+            // Leaves the consumer group cleanly, so a deploy does not wait out
+            // session.timeout.ms before the replacement is assigned partitions.
+            consumer.Close();
+        }
+    }
+
+    private static ActivityContext ReadTraceContext(Headers? headers)
+    {
+        if (headers is null || !headers.TryGetLastBytes("traceparent", out var raw) || raw is null)
+            return default;
+
+        return ActivityContext.TryParse(
+            Encoding.UTF8.GetString(raw),
+            null,
+            isRemote: true,
+            out var ctx
+        )
+            ? ctx
+            : default;
+    }
+
+    // Task.Delay throws when the token trips, and the caller is the loop's catch block.
+    // A throw from there escapes ExecuteAsync and stops the host on an ordinary shutdown.
+    private static async Task SafeDelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(delay, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
     }
 }

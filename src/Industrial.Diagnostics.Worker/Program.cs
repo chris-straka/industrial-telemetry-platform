@@ -1,11 +1,11 @@
 using Confluent.Kafka;
 using Google.GenAI;
-using Industrial.Shared;
-using Microsoft.Extensions.Options;
 using Industrial.Diagnostics.Worker.Configuration;
 using Industrial.Diagnostics.Worker.Features.Diagnostics;
 using Industrial.Diagnostics.Worker.Features.Diagnostics.ML;
+using Industrial.Diagnostics.Worker.Infrastructure;
 using Industrial.Diagnostics.Worker.Infrastructure.Data;
+using Industrial.Shared;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
@@ -26,24 +26,28 @@ builder
     .ValidateDataAnnotations()
     .ValidateOnStart();
 builder
+    .Services.AddOptions<ConsumerOptions>()
+    .Bind(builder.Configuration.GetSection(ConsumerOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+builder
     .Services.AddOptions<GeminiOptions>()
     .Bind(builder.Configuration.GetSection(GeminiOptions.Section))
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
-// Needed during registration, before the container exists.
+// Needed during registration, before the sp container exists.
 var otel = builder.Configuration.GetSection(OTelOptions.Section).Get<OTelOptions>()!;
 var kafka = builder.Configuration.GetSection(KafkaOptions.Section).Get<KafkaOptions>()!;
 var gemini = builder.Configuration.GetSection(GeminiOptions.Section).Get<GeminiOptions>()!;
-var pgConnectionString =
-    builder.Configuration.GetConnectionString("IndustrialDb")
-    ?? throw new InvalidOperationException(
-        "Missing 'ConnectionStrings:IndustrialDb' configuration."
-    );
+var pgConnectionString = builder.Configuration.GetConnectionString("IndustrialDb");
+ArgumentException.ThrowIfNullOrWhiteSpace(pgConnectionString);
 #endregion
 
 // Setup DB
-builder.Services.AddPooledDbContextFactory<AppDbContext>(options => options.UseNpgsql(pgConnectionString));
+builder.Services.AddPooledDbContextFactory<AppDbContext>(options =>
+    options.UseNpgsql(pgConnectionString)
+);
 
 builder
     .Services.AddOpenTelemetry()
@@ -58,6 +62,7 @@ builder
             .AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation()
             .AddRuntimeInstrumentation()
+            .AddMeter(WorkerMetrics.MeterName)
             .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     )
     .WithTracing(tracing =>
@@ -65,16 +70,22 @@ builder
             .AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation()
             .AddEntityFrameworkCoreInstrumentation()
+            .AddSource(WorkerTracing.SourceName)
             .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     );
 
-// Register Kafka
+builder.Services.AddSingleton<WorkerMetrics>();
+
+// Kafka
 builder.Services.AddSingleton(sp =>
 {
     var logger = sp.GetRequiredService<ILogger<IProducer<string, string>>>();
     var config = new ProducerConfig
     {
         BootstrapServers = kafka.BootstrapServers,
+        Acks = Acks.All,
+        EnableIdempotence = true,
+        MessageTimeoutMs = 20_000,
         AllowAutoCreateTopics = true,
         MetadataMaxAgeMs = 5000,
     };
@@ -100,12 +111,9 @@ app.Lifetime.ApplicationStopping.Register(() =>
     producer.Dispose();
 });
 
-// Migrate on startup in development only: in production this is a deploy step, because
-// a racing replica should not be the thing that decides the schema.
+// Migrate on startup for dev
 if (app.Environment.IsDevelopment())
 {
-    // A scope so the startup-only services are disposed once migration is done, rather
-    // than living on the root provider for the process.
     using var scope = app.Services.CreateScope();
     var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
     const int maxRetries = 5;

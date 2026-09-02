@@ -208,8 +208,11 @@ identically on every attempt, so the retries are pure latency.
 visible rather than silent.
 
 The gateway does the third (`UploaderWorker`, counted as `edge.telemetry.rejected`) and so
-does the consumer (`TelemetryConsumerWorker`). That is a deliberate scope decision, not an
-oversight: both are tracked in `TODO.md` as needing a DLQ.
+does the consumer (`TelemetryConsumerWorker`, counted as `worker.telemetry.discarded`).
+
+For the gateway that is a deliberate scope decision, tracked in `TODO.md` as needing a
+quarantine table. The consumer needs no DLQ: `TelemetryReadingValidator` refuses a non-GUID
+`MessageId` at the ingestion API, so nothing reaching Kafka can fail that parse.
 
 The gateway's version is milder than a classic poison message. The cloud names the ids it
 refuses in `rejected_message_ids` instead of failing the whole call, so the gateway never

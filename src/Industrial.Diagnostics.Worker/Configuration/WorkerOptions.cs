@@ -27,4 +27,18 @@ public class GeminiOptions
 
     [Required(AllowEmptyStrings = false)]
     public string ApiKey { get; set; } = string.Empty;
+
+    [Required(AllowEmptyStrings = false)]
+    public string Model { get; set; } = string.Empty;
+}
+
+public class ConsumerOptions
+{
+    public const string Section = "Consumer";
+
+    [Range(1, 3_600)]
+    public int BaseBackoffSeconds { get; set; }
+
+    [Range(1, 3_600)]
+    public int MaxBackoffSeconds { get; set; }
 }

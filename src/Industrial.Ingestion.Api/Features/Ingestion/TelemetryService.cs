@@ -31,8 +31,6 @@ public class TelemetryService(
             request.Readings.Count
         );
 
-        var faulted = false;
-
         foreach (var reading in request.Readings)
         {
             var validation = validator.Validate(reading);
@@ -69,10 +67,11 @@ public class TelemetryService(
                     Value = JsonSerializer.Serialize(payload),
                 };
 
-                // Without this there's no way to connect the sensor trace to the consumer
+                // Without this there's no way to connect the sensor trace to the consumer's trace
                 if (!string.IsNullOrEmpty(reading.Traceparent))
                 {
-                    kafkaMsg.Headers = [
+                    kafkaMsg.Headers =
+                    [
                         new Header("traceparent", Encoding.UTF8.GetBytes(reading.Traceparent)),
                     ];
                 }
@@ -85,22 +84,8 @@ public class TelemetryService(
                     )
                 );
             }
-            catch (KafkaException ex)
-            {
-                // Rejected by librdkafka's queue: full, message too large, producer fatal.
-                // Every produce after this one fails the same way, so stop and let the rest re-send.
-                faulted = true;
-                logger.LogError(
-                    ex,
-                    "Enqueue failed at reading {MessageId}; it and the rest go back to the gateway.",
-                    reading.MessageId
-                );
-                break;
-            }
             catch (Exception ex)
             {
-                // Nothing here should throw once validation has passed.
-                // If something does, it will do so on every re-send so refuse it
                 logger.LogError(
                     ex,
                     "Rejecting reading {MessageId} from {EquipmentId}: it cannot be produced.",
@@ -111,33 +96,28 @@ public class TelemetryService(
             }
         }
 
-        try
-        {
-            await Task.WhenAll(inflight.Select(x => x.Delivery));
-        }
-        catch
-        {
-            // WhenAll never says which message its one exception belonged to, read below
-        }
-
-        // Our own shutdown cancelled the deliveries rather than the broker failing them.
-        context.CancellationToken.ThrowIfCancellationRequested();
-
         var undelivered = 0;
+        var faulted = false;
         Exception? firstFailure = null;
 
         foreach (var (messageId, delivery) in inflight)
         {
-            // Completes only once the broker acknowledged, which is what the gateway deletes on
-            if (delivery.IsCompletedSuccessfully)
+            try
             {
+                await delivery;
                 accepted.Add(messageId);
-                continue;
             }
-
-            faulted = true;
-            undelivered++;
-            firstFailure ??= delivery.Exception?.GetBaseException();
+            catch (OperationCanceledException)
+                when (context.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                faulted = true;
+                undelivered++;
+                firstFailure ??= ex;
+            }
         }
 
         // One line, because an outage fails all 200 and buries the log

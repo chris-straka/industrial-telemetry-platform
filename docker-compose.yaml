@@ -98,7 +98,10 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ConnectionStrings__IndustrialDb=Host=postgres;Database=industrial_db;Username=admin;Password=password
+      - Consumer__BaseBackoffSeconds=1
+      - Consumer__MaxBackoffSeconds=30
       - Gemini__ApiKey=${GEMINI_API_KEY}
+      - Gemini__Model=gemini-flash-lite-latest
       - Kafka__BootstrapServers=kafka:9092
       - Kafka__GroupId=diagnostics-group
       - Kafka__EventsTopic=telemetry-events

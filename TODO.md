@@ -108,25 +108,23 @@ auditability gap as the Kafka side below.
 Fix: a local `quarantine` table in the same SQLite file, written in the same transaction
 as the delete, holding the row so a human can look at what was thrown away.
 
-# TODO: Dead Letter Queue
+# DONE: Trace context across Kafka
 
-Current: a poison pill is logged and skipped (`TelemetryConsumerWorker`).
-Risk: skipped means gone. No audit trail of what was dropped or why.
+Was: Kafka propagates nothing on its own, so the trace died at the producer and the
+consumer started a fresh one. There was no single view of a reading's whole journey.
 
-Fix: route failures to a `telemetry-errors` topic with the original payload plus the
-exception. Critical for auditability in fintech and industrial systems alike.
+`TelemetryService` writes the reading's own `traceparent` onto the Kafka message headers,
+and `TelemetryConsumerWorker` parses it back into an `ActivityContext` and starts
+`telemetry.process` parented to it. Ambient Activity state does not survive a broker, so
+bytes on the message are the only carrier.
 
-# TODO: Trace context across Kafka
+It carries the reading's traceparent rather than the batch span's, so one trace follows a
+single reading from the emulator's POST to the Postgres write, across an outage. The
+gateway's batch trace stays separate and reaches the reading traces through its 200 span
+LINKS -- see `docs/Observability.md`.
 
-Current: OTel auto-instrumentation covers HTTP and gRPC, and W3C `traceparent`
-propagates over the gRPC hop, so gateway -> cloud stitches into one trace.
-Risk: Kafka does NOT propagate trace context automatically. The trace dies at the
-producer and a new one starts at the consumer, so there is no single Gantt chart of a
-reading's whole journey.
-
-Fix: inject `traceparent` into Kafka message headers on produce, extract and restore it
-on consume. That closes the last gap and makes an outage visible as one ten-minute-wide
-trace.
+`Industrial.Web.Api` extracts the same header on both topics and starts `telemetry.relay`
+under it, so the trace runs from the emulator's POST to the dashboard push.
 
 # DONE: Trace context across the SQLite buffer
 
@@ -252,7 +250,11 @@ its backfill `defaultValue` on the column permanently, which would have made a f
 
 The consumer loop try/catches per message and continues. Messages with no `MessageId` are
 discarded explicitly, since a message that can't be deduplicated can't be accepted without
-breaking the guarantee. (Still needs the DLQ above so they're not silently lost.)
+breaking the guarantee, and each one is counted on `worker.telemetry.discarded`.
+
+A DLQ was dropped from scope rather than built: `TelemetryReadingValidator` refuses a
+non-GUID `MessageId` before it reaches Kafka, so the only door left to this path is the
+dev-only REST endpoint.
 
 # DONE: Hardcoded connection string
 
