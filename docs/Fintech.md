@@ -114,7 +114,9 @@ genuinely harder once money is involved:
 - **Retention and audit.** You cannot drop a poison-pill payment message and move on. It
   goes to a DEAD LETTER QUEUE -- a separate topic where unprocessable messages land with
   their error attached, so a human can inspect and replay them instead of the data simply
-  vanishing. (TODO.md already has this as an open item for the telemetry pipeline.)
+  vanishing. The telemetry project now demonstrates publish-before-commit DLQ handling, but a
+  payment system would additionally need controlled remediation, replay approval, and much longer
+  retention guarantees.
 - **PCI scope.** PCI DSS is the card industry's security standard. "Scope" means which of
   your systems fall under its audit: anything that stores, processes or transmits
   cardholder data, especially the PAN (Primary Account Number -- the 16 digits on the

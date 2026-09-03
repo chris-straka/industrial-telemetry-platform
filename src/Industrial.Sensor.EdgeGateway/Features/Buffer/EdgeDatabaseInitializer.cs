@@ -1,4 +1,5 @@
 using Industrial.Sensor.EdgeGateway.Configuration;
+
 using Microsoft.EntityFrameworkCore;
 
 namespace Industrial.Sensor.EdgeGateway.Features.Buffer;

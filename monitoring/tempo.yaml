@@ -16,3 +16,7 @@ storage:
         backend: local
         local:
             path: /tmp/tempo/traces
+        # Compose persists /tmp/tempo. Keep the write-ahead log on the same volume so a
+        # restart cannot discard traces which have not yet been flushed into local blocks.
+        wal:
+            path: /tmp/tempo/wal

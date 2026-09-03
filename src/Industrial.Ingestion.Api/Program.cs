@@ -1,12 +1,17 @@
 using Confluent.Kafka;
+
 using FluentValidation;
+
 using Industrial.Ingestion.Api.Configuration;
 using Industrial.Ingestion.Api.Features.Ingestion;
 using Industrial.Ingestion.Api.Infrastructure;
 using Industrial.Shared;
+
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
+
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -48,9 +53,42 @@ builder
     .Bind(builder.Configuration.GetSection(KafkaOptions.Section))
     .ValidateDataAnnotations()
     .ValidateOnStart();
+builder
+    .Services.AddOptions<TransportSecurityOptions>()
+    .Bind(builder.Configuration.GetSection(TransportSecurityOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
 
 var otel = builder.Configuration.GetSection(OTelOptions.Section).Get<OTelOptions>()!;
 var kafka = builder.Configuration.GetSection(KafkaOptions.Section).Get<KafkaOptions>()!;
+var transportSecurity =
+    builder.Configuration.GetSection(TransportSecurityOptions.Section)
+        .Get<TransportSecurityOptions>() ?? new TransportSecurityOptions();
+
+if (transportSecurity.Enabled)
+{
+    var grpcEndpoint = builder.Configuration["Kestrel:Endpoints:Grpc:Url"];
+    if (grpcEndpoint is null || !grpcEndpoint.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException(
+            "The gRPC Kestrel endpoint must use https:// when transport security is enabled."
+        );
+    }
+
+    var clientCertificatePolicy = ClientCertificatePolicy.Load(
+        transportSecurity.TrustedClientCaPath,
+        transportSecurity.AllowedClientFingerprintsPath
+    );
+    builder.Services.AddSingleton(clientCertificatePolicy);
+    builder.WebHost.ConfigureKestrel(options =>
+        options.ConfigureHttpsDefaults(https =>
+        {
+            https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+            https.ClientCertificateValidation = (certificate, _, _) =>
+                clientCertificatePolicy.IsAllowed(certificate);
+        })
+    );
+}
 
 builder
     .Services.AddOpenTelemetry()

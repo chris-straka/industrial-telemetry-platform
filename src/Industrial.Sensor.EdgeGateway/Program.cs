@@ -4,8 +4,10 @@ using Industrial.Sensor.EdgeGateway.Features.Buffer;
 using Industrial.Sensor.EdgeGateway.Features.Upload;
 using Industrial.Sensor.EdgeGateway.Infrastructure;
 using Industrial.Shared;
+
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
+
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -52,12 +54,30 @@ builder
     .Bind(builder.Configuration.GetSection(UploaderOptions.Section))
     .ValidateDataAnnotations()
     .ValidateOnStart();
+builder
+    .Services.AddOptions<TransportSecurityOptions>()
+    .Bind(builder.Configuration.GetSection(TransportSecurityOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
 
 // Needed during registration, before the service provider container exists.
 var otel = builder.Configuration.GetSection(OTelOptions.Section).Get<OTelOptions>()!;
 var cloud = builder.Configuration.GetSection(CloudOptions.Section).Get<CloudOptions>()!;
 var buffer = builder.Configuration.GetSection(BufferOptions.Section).Get<BufferOptions>()!;
+var transportSecurity =
+    builder.Configuration.GetSection(TransportSecurityOptions.Section)
+        .Get<TransportSecurityOptions>() ?? new TransportSecurityOptions();
 #endregion
+
+if (
+    transportSecurity.Enabled
+    && !cloud.ApiUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+)
+{
+    throw new InvalidOperationException(
+        "Cloud:ApiUrl must use https:// when transport security is enabled."
+    );
+}
 
 // We're intercepting the conn to set synchronous=FULL for every conn
 builder.Services.AddSingleton<SqlitePragmaInterceptor>();
@@ -96,10 +116,16 @@ builder
     );
 
 // gRPC connection to the cloud (ingestion API).
-builder.Services.AddGrpcClient<TelemetryIngestion.TelemetryIngestionClient>(o =>
+var ingestionClient = builder.Services.AddGrpcClient<TelemetryIngestion.TelemetryIngestionClient>(o =>
 {
     o.Address = new Uri(cloud.ApiUrl);
 });
+if (transportSecurity.Enabled)
+{
+    ingestionClient.ConfigurePrimaryHttpMessageHandler(() =>
+        MutualTlsHttpHandlerFactory.Create(transportSecurity)
+    );
+}
 
 // Uploads readings from SQLite to the cloud
 builder.Services.AddHostedService<UploaderWorker>();

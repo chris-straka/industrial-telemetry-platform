@@ -1,5 +1,7 @@
 using Confluent.Kafka;
+
 using Industrial.Ingestion.Api.Infrastructure;
+
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace Industrial.Ingestion.Tests;

@@ -1,5 +1,7 @@
 using System.Diagnostics;
+
 using FluentValidation;
+
 using Google.Protobuf.WellKnownTypes;
 
 namespace Industrial.Ingestion.Api.Features.Ingestion;

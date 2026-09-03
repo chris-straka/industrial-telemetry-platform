@@ -17,3 +17,36 @@ public class KafkaOptions
     [Range(1, MaximumReadinessTimeoutSeconds)]
     public int ReadinessTimeoutSeconds { get; set; }
 }
+
+public sealed class TransportSecurityOptions : IValidatableObject
+{
+    public const string Section = "TransportSecurity";
+
+    public bool Enabled { get; set; }
+
+    public string TrustedClientCaPath { get; set; } = string.Empty;
+
+    public string AllowedClientFingerprintsPath { get; set; } = string.Empty;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (!Enabled)
+            yield break;
+
+        if (string.IsNullOrWhiteSpace(TrustedClientCaPath))
+        {
+            yield return new ValidationResult(
+                "TransportSecurity:TrustedClientCaPath is required when mTLS is enabled.",
+                [nameof(TrustedClientCaPath)]
+            );
+        }
+
+        if (string.IsNullOrWhiteSpace(AllowedClientFingerprintsPath))
+        {
+            yield return new ValidationResult(
+                "TransportSecurity:AllowedClientFingerprintsPath is required when mTLS is enabled.",
+                [nameof(AllowedClientFingerprintsPath)]
+            );
+        }
+    }
+}

@@ -24,6 +24,9 @@ jobs:
       - name: Build .NET solution
         run: dotnet build IndustrialPlatform.slnx --configuration Release --no-restore --warnaserror
 
+      - name: Verify .NET formatting
+        run: dotnet format IndustrialPlatform.slnx --no-restore --verify-no-changes
+
       - name: Restore local .NET tools
         run: dotnet tool restore
 
@@ -70,9 +73,35 @@ jobs:
       - name: Render default and optional Helm resources
         run: |
           helm template industrial-platform chart --namespace industrial-platform --output-dir "$RUNNER_TEMP/helm-default"
+          helm template industrial-platform chart \
+            --namespace industrial-platform \
+            --output-dir "$RUNNER_TEMP/helm-optional" \
+            --set externalSecret.enabled=true \
+            --set externalSecret.remoteRefs.geminiApiKey.key=ci/gemini \
+            --set externalSecret.remoteRefs.postgresConnectionString.key=ci/postgres-connection \
+            --set externalSecret.remoteRefs.postgresPassword.key=ci/postgres-password \
+            --set istio.enabled=true \
+            --set transportSecurity.enabled=true \
+            --set transportSecurity.ingestion.secretName=ci-ingestion-mtls \
+            --set transportSecurity.edgeGateway.secretName=ci-edge-mtls
           helm lint chart \
             --set externalSecret.enabled=true \
             --set externalSecret.remoteRefs.geminiApiKey.key=ci/gemini \
             --set externalSecret.remoteRefs.postgresConnectionString.key=ci/postgres-connection \
             --set externalSecret.remoteRefs.postgresPassword.key=ci/postgres-password \
-            --set istio.enabled=true
+            --set istio.enabled=true \
+            --set transportSecurity.enabled=true \
+            --set transportSecurity.ingestion.secretName=ci-ingestion-mtls \
+            --set transportSecurity.edgeGateway.secretName=ci-edge-mtls
+
+  e2e:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run isolated failure and recovery suite
+        run: ./scripts/e2e.sh
+        env:
+          GEMINI_API_KEY: e2e-config-validation-only

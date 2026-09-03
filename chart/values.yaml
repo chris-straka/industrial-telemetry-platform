@@ -1,5 +1,5 @@
 # This chart is a renderable deployment prototype, not a production claim. Secrets, image
-# publishing, TLS/mTLS, storage classes, and the external OTLP collector remain operator concerns.
+# publishing, storage classes, and the external OTLP collector remain operator concerns.
 
 nameOverride: ""
 fullnameOverride: ""
@@ -28,6 +28,23 @@ platform:
     geminiApiKeyKey: gemini-api-key
     postgresConnectionStringKey: postgres-connection-string
     postgresPasswordKey: postgres-password
+
+# Optional application-level mTLS for the edge-gateway -> ingestion-api gRPC hop. The chart never
+# creates these Secrets: provision them before installation (or arrange for another controller to
+# do so). Separate Secrets keep each private key visible only to the workload that owns it.
+transportSecurity:
+  enabled: false
+  ingestion:
+    secretName: ""
+    serverCertificateKey: server.pfx
+    serverCertificatePasswordKey: server-pfx-password
+    trustedClientCaKey: ca.crt
+    allowedClientFingerprintsKey: allowed-client-sha256.txt
+  edgeGateway:
+    secretName: ""
+    clientCertificateKey: client.pfx
+    clientCertificatePasswordKey: client-pfx-password
+    trustedServerCaKey: ca.crt
 
 images:
   edge-gateway: edge-gateway:latest

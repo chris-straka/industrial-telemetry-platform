@@ -1,0 +1,78 @@
+name: Terraform Production Plan
+
+# This workflow deliberately stops at a plan. Applying would mutate Kafka, install cluster-level
+# controllers, and enable Argo CD's automated sync; that needs a separately reviewed promotion
+# boundary after this prototype has been exercised in a disposable environment.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-production-plan
+  cancel-in-progress: true
+
+jobs:
+  plan-prod:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: prod
+    defaults:
+      run:
+        working-directory: infra
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_VAR_kubeconfig_path: ${{ runner.temp }}/industrial-platform-kubeconfig
+      TF_VAR_kafka_sasl_username: ${{ secrets.PROD_KAFKA_SASL_USERNAME }}
+      TF_VAR_kafka_sasl_password: ${{ secrets.PROD_KAFKA_SASL_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: 1.16.0
+
+      - name: Configure AWS credentials for remote state
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.TERRAFORM_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Validate protected-environment inputs
+        env:
+          KUBECONFIG_B64: ${{ secrets.PROD_KUBECONFIG_B64 }}
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+        run: |
+          test -n "$KUBECONFIG_B64"
+          test -n "$TF_STATE_BUCKET"
+          test -n "$TF_STATE_KEY"
+
+      - name: Materialize kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.PROD_KUBECONFIG_B64 }}
+        run: |
+          umask 077
+          printf '%s' "$KUBECONFIG_B64" | base64 --decode > "$TF_VAR_kubeconfig_path"
+
+      - name: Initialize encrypted remote state
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+          TF_STATE_REGION: ${{ vars.AWS_REGION }}
+        run: >-
+          terraform init -input=false
+          -backend-config="bucket=$TF_STATE_BUCKET"
+          -backend-config="key=$TF_STATE_KEY"
+          -backend-config="region=$TF_STATE_REGION"
+
+      - name: Check formatting and configuration
+        run: |
+          terraform fmt -check -recursive
+          terraform validate -no-color
+
+      - name: Create production plan
+        run: terraform plan -var-file=prod.tfvars -no-color

@@ -25,7 +25,7 @@ sensor-emulator (N devices, mints MessageId + OccurredAt)
    │  + exponential backoff w/ jitter                    │
    │  + OTel: queue depth, oldest message age            │
    └────────────────────────┬────────────────────────────┘
-                            │ gRPC unary, 200 readings a call (HTTP/2), WAN
+                            │ gRPC unary, 200 readings a call (HTTP/2 + mTLS), WAN
                             ▼
                         ingestion-api
                             │ produces telemetry-events, keyed by EquipmentId
@@ -38,6 +38,7 @@ diagnostics-worker          │                      web-api
  ├─ ML.NET anomaly check    │                       ├─ consumes telemetry-alerts
  ├─ saves to Postgres       │                       └─ relays live data via SignalR
  ├─ calls Gemini            │                                  │
+ ├─ poisons ──► telemetry-events-dlq                           │
  └─ alert outbox publisher ─┘                                  ▼
                                                          web-dashboard
 ```
@@ -51,6 +52,13 @@ There are two explicit reliability zones:
 - **After gateway `202`: durable at-least-once.** The gateway has fsynced the reading to SQLite.
   Ambiguous gRPC/Kafka failures retry, and the reading is deleted only after ingestion names its
   `MessageId` accepted or permanently rejected.
+
+A deterministic cloud rejection is permanent loss from the live pipeline, not successful
+delivery. The gateway atomically preserves the original row in a bounded SQLite quarantine before
+settling it; inspect recent entries at `GET /buffer/quarantine?limit=100`. Diagnostics handles a
+different poison-record boundary: malformed Kafka values and tombstones are copied to
+`telemetry-events-dlq` before their source offsets are committed. If the DLQ write fails or is
+ambiguous, the source record is retried.
 
 Every reading carries an immutable `MessageId` minted by the sensor. SQLite protects live and
 recently settled gateway IDs; Postgres has a unique index for Kafka replay. Duplicate live events
@@ -84,11 +92,42 @@ make upd                # everything up, queue depth ~0
 make chaos-cloud-down   # kill the cloud; queue climbs, sensors keep producing
 make chaos-gateway-kill # kill the gateway too, mid-outage; buffer survives
 make chaos-cloud-up     # cloud returns; queue drains oldest-first
-make verify             # require drained queue/outbox; report IDs, gaps, and lag
+make verify             # briefly quiesce sensors, drain the pipeline, and audit IDs/gaps/lag
 ```
 
 Watch `edge_queue_depth` and `edge_oldest_message_age_seconds` in Grafana while it runs. The audit
-fails on an empty database, duplicate IDs, a non-empty edge queue, or pending alert outbox rows.
+temporarily stops any active Compose sensor containers, waits for the edge queue, Diagnostics Kafka
+lag, and alert outbox to drain, takes a stable snapshot, then restarts the sensors that were running.
+It fails on an empty database, duplicate IDs, or a pipeline that does not drain before the timeout.
+
+For an automated destructive test that does not touch the normal development project:
+
+```sh
+./scripts/e2e.sh
+```
+
+The isolated Compose harness verifies an ingestion outage plus gateway restart, Postgres consumer
+retry, malformed-record DLQ handling, alert-outbox recovery after a Kafka outage, and rejection of
+a TLS client that does not present the gateway certificate. It uses a unique Compose project and
+volumes on every run.
+
+# Health and local transport security
+
+The gateway and cloud services expose `/health` for process liveness and `/health/ready` for the
+dependencies needed to accept new work. Readiness checks Kafka topic/partition availability,
+Postgres reachability and current migrations, or SQLite writability as appropriate. Cloud
+reachability is deliberately a gateway metric rather than gateway readiness: accepting onto local
+disk during a cloud outage is its job.
+
+Compose generates a private development CA, an ingestion server certificate, and a gateway client
+certificate in separate named volumes. The edge validates the ingestion name and private CA;
+ingestion requires the client certificate, validates its client-auth purpose and private CA, and
+checks its SHA-256 fingerprint against an allowlist. Identities survive ordinary restarts, while
+`docker compose down -v` intentionally destroys and regenerates this local PKI.
+
+This mTLS protection covers only edge-to-ingestion gRPC. Sensor-to-edge, Kafka, Postgres, and
+observability traffic remain plaintext and unauthenticated inside the Compose network. See
+[Security](docs/Security.md) for the exact boundary and remaining work.
 
 # Install
 
@@ -108,9 +147,9 @@ Compose publishes development ports on `127.0.0.1` only.
 | web-dashboard | 5173 | Vite dev server |
 | web-api | 5090 | SignalR hub |
 | ingestion-api | 5089 | REST (HTTP/1.1), manual testing only |
-| ingestion-api | 5091 | gRPC (HTTP/2 cleartext) |
-| edge-gateway | 5272 | sensor receiver + `/health` |
-| grafana | 3000 | anonymous admin |
+| ingestion-api | 5091 | gRPC (HTTPS/HTTP/2); requires the generated gateway client certificate |
+| edge-gateway | 5272 | sensor receiver, `/health`, `/health/ready`, and buffer inspection |
+| grafana | 3000 | anonymous viewer; provisioned dashboard, alerts, logs, metrics, and traces |
 | kafka-ui | 8080 | |
 | pgadmin | 5050 | |
 
@@ -118,8 +157,10 @@ Compose publishes development ports on `127.0.0.1` only.
 
 Design notes live in [docs/](docs/) — [Networking](docs/Networking.md),
 [Kafka](docs/Kafka.md), [Observability](docs/Observability.md), [DB](docs/DB),
-[ML](docs/ML). Known gaps and planned work are in [TODO.md](TODO.md).
+[ML](docs/ML), and [Security](docs/Security.md). Known gaps and planned work are in
+[TODO.md](TODO.md).
 
-Docker Compose is the supported runnable/demo path. The Helm, production Tilt, and Terraform files
-are an unfinished prototype; see the ranked production-deployment work in [TODO.md](TODO.md) before
-treating them as deployable infrastructure.
+Docker Compose is the supported runnable/demo path. The checked-in Helm and Terraform material can
+be linted, rendered, or planned, but it has not been applied and exercised as a production system.
+See the remaining deployment work in [TODO.md](TODO.md) before treating it as deployable
+infrastructure.

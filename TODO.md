@@ -3,96 +3,65 @@
 Reviewed 2026-09-02. This file is a backlog, not a history of completed work. Docker Compose is the
 supported demo path; the Kubernetes/Terraform material is still a prototype.
 
-## 1. Add a real end-to-end failure test
+## 1. Extend the isolated failure harness
 
-The focused xUnit suites and CI now cover admission bounds, concurrent capacity, schema tags,
-validation, detector state isolation, and the outbox model. They do not yet prove the whole running
-pipeline.
+`scripts/e2e.sh` now creates a unique Compose project and volumes, submits a known accepted-ID set,
+and verifies ingestion/gateway restart recovery, Postgres consumer retry, a durable poison-record
+DLQ copy, alert-outbox recovery after a Kafka outage, and rejection of a TLS client without the
+gateway certificate. It does not use the normal development project's containers or data.
 
-Use Testcontainers (or an equivalent isolated Compose harness) to start Kafka, Postgres, ingestion,
-gateway, and diagnostics; submit a known set of gateway-accepted IDs; interrupt Kafka/ingestion and
-restart the gateway; then assert:
+Still add controlled fault injection for an ambiguous Kafka acknowledgement, then prove the
+resulting replay remains one Postgres row and one rendered dashboard item per `MessageId`. The
+current harness verifies server-side idempotency after ordinary retry, but it does not drive a real
+browser or manufacture an ACK-after-write connection failure.
 
-- every accepted ID eventually exists once in Postgres;
-- the edge queue drains to zero;
-- failed diagnostic processing does not advance past a Kafka offset;
-- an alert publish failure leaves a pending outbox row that later publishes;
-- ambiguous ACKs may duplicate Kafka delivery but not Postgres or dashboard state.
+## 2. Complete authentication and transport security
 
-The test needs an origin-side accepted-ID ledger. Sequence numbers alone cannot detect a dropped
-tail, and the emulator intentionally drops before `202`.
+Compose now protects edge-to-ingestion gRPC with a private development CA, a gateway client
+certificate, and an explicit SHA-256 certificate allowlist. This demonstrates the shape of
+per-gateway revocation, but it is not a production certificate lifecycle.
 
-## 2. Add readiness, not just liveness
+Remaining work:
 
-All web-hosted .NET processes now expose `/health`, but those endpoints only prove the process can
-answer HTTP. Add separate `/health/ready` checks for the dependencies required to serve new work:
+- authenticate and encrypt sensor-to-edge traffic without turning one fleet-wide shared secret
+  into every device's identity;
+- add Kafka TLS/SASL and Postgres TLS plus workload-specific credentials;
+- protect observability ingestion and operator UIs;
+- replace the development CA bootstrap with managed enrollment, renewal, rotation, revocation, and
+  audit; and
+- decide whether the gateway allowlist should reload without restarting ingestion.
 
-- ingestion: Kafka topic metadata/producer readiness;
-- diagnostics: Postgres migration state plus Kafka assignment;
-- Web API: Kafka assignment;
-- gateway: SQLite writable, while cloud reachability remains a metric rather than liveness.
+## 3. Prove or remove the production deployment prototype
 
-Wire the distinction into Compose/Kubernetes only after the checks exist.
+The Helm and Terraform files are useful render/plan artifacts, not evidence of a production
+deployment. Do not present `prod.Tiltfile`, `chart/`, or `infra/` as deployed until a real target
+environment has exercised them.
 
-## 3. Quarantine permanent cloud rejections
+Before enabling an apply workflow:
 
-Strict edge and ingestion validation should make `rejected_message_ids` exceptional, but the
-gateway still deletes a rejected live row so one poison record cannot block the oldest-first queue.
-Add a bounded local quarantine table containing the original reading, rejection time, and reason
-code. Write quarantine + settled marker + live-row delete in one SQLite transaction, expose an
-operator inspection command, and define retention so quarantine cannot fill the disk.
+- publish immutable application images and configure the chart with registry digests;
+- bootstrap and verify the encrypted remote Terraform backend and locking outside the same state
+  it protects;
+- create the cloud identity and SecretStore used by External Secrets, and provision runtime
+  secrets without putting their values in Terraform variables or state;
+- provide a production CA and a persistent, independently revocable identity and volume for each
+  real gateway;
+- run plan, apply, rollout, failure recovery, rollback, and destroy in a disposable account or
+  cluster; and
+- retain a reviewed promotion boundary before any persistent environment changes.
 
-## 4. Make anomaly decisions auditable
+## 4. Calibrate and route observability alerts
 
-Persist detector score, p-value, detector configuration/version hash, and the amount of warm-up
-history beside `IsAnomaly`. Right now logs contain score/p-value but historical rows cannot explain
-which configuration produced the decision.
+Compose now provisions a checked-in Grafana dashboard, Prometheus alert rules, and named storage
+for Prometheus, Loki, Tempo, and Grafana. The rules deliberately cover permanent sensor drops,
+gateway backlog/rejections, diagnostics retries/DLQ failures, and the alert outbox.
 
-Also define retention for successfully published outbox rows. Pending rows must never expire;
-published rows do not need to grow forever.
+The current thresholds are engineering defaults, not measured service-level objectives. Run
+sustained load and outage drills to tune histogram buckets, p95/p99 thresholds, and `for` windows;
+choose retention and disk budgets; then add an Alertmanager notification route and verify an
+operator can follow a firing alert through metrics, logs, traces, quarantine, and the DLQ.
 
-## 5. Add poison-message quarantine or DLQ
-
-Diagnostics intentionally commits malformed Kafka records after incrementing
-`worker.telemetry.discarded`, because retry cannot repair invalid JSON. A DLQ/quarantine topic would
-make the payload inspectable. Protect it from recursive failure and do not let a DLQ outage advance
-the source offset silently.
-
-## 6. Add authentication and transport security
-
-Every internal hop is plaintext and unauthenticated today. For a realistic edge fleet, prefer mTLS
-with a per-gateway client certificate so one device can be revoked independently. If demonstrating
-identity-provider flows, use short-lived M2M tokens for cloud services; do not treat one shared
-secret across every simulated device as the final design.
-
-## 7. Either finish or remove the production deployment prototype
-
-Do not present `prod.Tiltfile`, `chart/`, or `infra/` as deployable yet. Before enabling apply jobs:
-
-- make `helm dependency build` plus `helm template` pass in CI;
-- model the edge gateway as stateful identity plus per-replica persistent storage;
-- render every application once with the exact validated configuration keys;
-- choose one secret-management path and create its identity/SecretStore;
-- repair Terraform provider wiring and supply a remote encrypted backend with locking;
-- make plan inputs complete without placing secrets in tfvars or Terraform state;
-- add a reviewed promotion boundary before production apply.
-
-The current Terraform apply workflow should not be used until those decisions are made.
-
-## 8. Exercise observability under failure
-
-The sensor and edge now expose logical delivery-duration histograms in addition to counters and
-queue gauges. Run the outage demo against a live collector and add checked-in dashboards/alerts for:
-
-- sensor acquisition drops and post-retry delivery drops;
-- edge depth, oldest age, shed count, rejection count, and cloud reachability;
-- diagnostics processing retries and pending alert outbox rows;
-- p95/p99 sensor HTTP and edge gRPC logical-attempt duration.
-
-Decide whether local Prometheus/Loki/Tempo history should use named volumes; it is currently
-disposable with the containers.
-
-## 9. Optional cleanup
+## 5. Optional cleanup and measurement
 
 - Rename `Industrial.Data.ML` to something like `Industrial.ML.DetectorBuilder`; it creates an
   online IID detector artifact and does not train a learned model.
@@ -100,3 +69,4 @@ disposable with the containers.
   store-and-forward architecture.
 - Code-split the dashboard if its current single production JavaScript chunk becomes a practical
   load-time issue.
+- Record a reproducible load-test result before making throughput or sub-second latency claims.

@@ -1,5 +1,6 @@
 using Industrial.Sensor.EdgeGateway.Configuration;
 using Industrial.Sensor.EdgeGateway.Features.Buffer;
+
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -83,6 +84,37 @@ public sealed class BufferSettlementStoreTests
             await db.QuarantinedTelemetryRecords.AnyAsync(row => row.MessageId == expired.MessageId)
         );
         Assert.Equal(2, await db.QuarantinedTelemetryRecords.CountAsync());
+        Assert.Equal(0, depth.Current);
+    }
+
+    [Fact]
+    public async Task Existing_quarantine_row_does_not_wedge_rejection_settlement()
+    {
+        await using var connection = await OpenConnectionAsync();
+        var dbOptions = new DbContextOptionsBuilder<EdgeDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new EdgeDbContext(dbOptions);
+        await db.Database.EnsureCreatedAsync();
+
+        var rejected = Reading("EQ-readmitted", sequence: 3);
+        var firstRejectedAt = DateTimeOffset.UtcNow.AddHours(-1);
+        db.TelemetryRecords.Add(rejected);
+        db.QuarantinedTelemetryRecords.Add(Quarantined(rejected, firstRejectedAt));
+        await db.SaveChangesAsync();
+
+        var depth = new BufferDepth();
+        depth.Initialize(1);
+        using var gate = new BufferMutationGate();
+        var store = CreateStore(db, gate, depth, quarantineMaxRows: 100);
+
+        await store.SettleAsync([rejected], [rejected.MessageId], CancellationToken.None);
+
+        Assert.Empty(await db.TelemetryRecords.ToListAsync());
+        Assert.Single(await db.SettledMessages.ToListAsync());
+        var quarantined = await db.QuarantinedTelemetryRecords.SingleAsync();
+        Assert.Equal(rejected.MessageId, quarantined.MessageId);
+        Assert.Equal(firstRejectedAt, quarantined.RejectedAt);
         Assert.Equal(0, depth.Current);
     }
 

@@ -1,6 +1,8 @@
 using System.Diagnostics;
+
 using Industrial.Sensor.EdgeGateway.Configuration;
 using Industrial.Sensor.EdgeGateway.Infrastructure;
+
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -56,15 +58,19 @@ public static class ReceiveTelemetryEndpoint
                 await mutationGate.EnterAsync(http.RequestAborted);
                 try
                 {
-                    // A MessageId can be in exactly one of two durable states: queued or recently
-                    // settled. Check both before reserving capacity so retries stay idempotent even
-                    // when the queue happens to be full.
+                    // A MessageId can be queued, recently settled, or retained in rejection
+                    // quarantine. Check all durable states before reserving capacity so delayed
+                    // retries stay idempotent even when their shorter-lived settled marker expired.
                     var alreadyKnown =
                         await db.SettledMessages.AnyAsync(
                             x => x.MessageId == canonicalMessageId,
                             http.RequestAborted
                         )
                         || await db.TelemetryRecords.AnyAsync(
+                            x => x.MessageId == canonicalMessageId,
+                            http.RequestAborted
+                        )
+                        || await db.QuarantinedTelemetryRecords.AnyAsync(
                             x => x.MessageId == canonicalMessageId,
                             http.RequestAborted
                         );
@@ -159,9 +165,6 @@ public static class ReceiveTelemetryEndpoint
                 }
             }
         );
-
-        // Liveness
-        app.MapGet("/health", () => Results.Ok());
 
         // Same number as edge.queue.depth gauge, readable without Prometheus
         // Reports disk not cache

@@ -1,4 +1,5 @@
 using System.Data.Common;
+
 using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace Industrial.Sensor.EdgeGateway.Features.Buffer;

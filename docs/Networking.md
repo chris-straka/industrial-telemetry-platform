@@ -128,9 +128,10 @@ On the gateway hop it earns its keep:
 2. That link carries a continuous stream of batched telemetry, i.e. genuinely concurrent traffic on one connection
 3. `telemetry.proto` is a shared schema both sides generate from, so a renamed field is a compile error
 
-Plaintext gRPC needs its own port pinned to Http2.
-There's no TLS between containers, so ALPN has nothing to negotiate with and the protocol has to be declared.
-In prod you terminate TLS at the ingress (Istio) and this split collapses back to one port.
+Compose gives this WAN-shaped hop its own HTTPS port pinned to HTTP/2. TLS therefore supplies ALPN,
+while the separate HTTP/1.1 port keeps health and manual REST checks simple. The gateway and
+ingestion service authenticate each other directly; adding a production ingress or service mesh
+must not silently remove that workload-to-workload identity boundary.
 
 gRPC does NOT give you exactly-once.
 If a stream dies after the server committed but before the ACK arrives, you still don't know.
@@ -267,9 +268,10 @@ The `await` IS the handoff, and recording the id afterwards is what keeps `accep
 writes rather than a list of attempts.
 
 That makes `Acks` load-bearing. At `acks=0` the task would complete on send and the whole guarantee
-collapses into a lie. librdkafka defaults it to all, so this currently holds by inheritance rather than
-by decision -- which is precisely the situation the "no fallback defaults" rule in CLAUDE.md exists to
-prevent. Set it explicitly.
+collapses into a lie. Both producers therefore set `Acks.All` explicitly; they do not inherit a
+client-library default for a property that defines the custody boundary. `EnableIdempotence` is also
+explicit, although a producer retry can still yield an ambiguous result at a boundary outside one
+producer session, which is why consumers remain idempotent by `MessageId`.
 
 > Why 202 is the wrong verb here
 
@@ -288,7 +290,9 @@ It loses because the buffer that absorbs a Kafka outage already exists one hop u
 that survives power loss: Kafka down means `ProduceAsync` throws, fewer ids come back, and the gateway
 simply keeps those rows. Adding another durable log in front of a durable log insures against the outage
 of the one component whose entire job is being a durable log.
-See TODO.md for why this is also not the "dual write" problem it was first filed as.
+This is not the classic dual-write problem either: ingestion does not need to atomically update a
+database and Kafka. Kafka is its one durable write, and only the acknowledgement list is returned
+after that write succeeds.
 
 > Durability comes before batching, never after
 
@@ -307,8 +311,8 @@ These are separate choices and it's easy to conflate them.
 | hop | transport | payload |
 | --- | --- | --- |
 | sensor -> gateway | HTTP/1.1 | JSON |
-| gateway -> cloud | HTTP/2 | protobuf |
-| inside Kafka | Kafka binary/TCP | JSON string (TODO: protobuf) |
+| gateway -> cloud | HTTP/2 over mutually authenticated TLS in Compose | protobuf |
+| inside Kafka | Kafka binary/TCP | shared `TelemetryEnvelope` JSON |
 
 Kafka is a binary protocol currently carrying JSON TEXT in the message value.
 Swapping that payload for protobuf doesn't change the transport at all.
@@ -317,6 +321,7 @@ The reason to swap it isn't parsing speed, it's schema enforcement.
 `System.Text.Json` silently leaves unmatched properties at their defaults.
 I already hit this: the API wrote `MessageId` into the JSON, the worker's DTO didn't have the field, and it became null forever. No exception, no log.
 
-Cheap 90% fix: put the contract in a shared project both sides reference, so a rename is a compile error.
-The gRPC hop already works this way. `telemetry.proto` IS the shared schema.
+The current contract lives in `Industrial.Shared`, which both producer and consumers reference, so
+a property rename is a compile error inside this repository. The gRPC hop already works the same
+way: `telemetry.proto` is its shared schema.
 Schema Registry is the full fix, but it's another container to operate. Add it when there are producers I don't own.

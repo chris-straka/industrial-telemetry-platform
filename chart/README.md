@@ -1,8 +1,10 @@
 # IndustrialPlatform Helm chart
 
 This is a render-validated Kubernetes prototype for the application topology. It is not a
-production deployment bundle: image publishing, an OTLP Collector, TLS/mTLS, authentication,
+production deployment bundle: image publishing, an OTLP Collector, authentication,
 storage-class selection, and secret-store installation are intentionally left to the operator.
+The chart can configure edge-to-ingestion mTLS, but certificate issuance and rotation remain
+operator responsibilities.
 
 Before installation, create the Secret named by `platform.applicationSecret.name` with:
 
@@ -13,6 +15,37 @@ Before installation, create the Secret named by `platform.applicationSecret.name
 
 Alternatively, install External Secrets Operator and a compatible SecretStore, then enable and
 configure `externalSecret`. The chart contains no literal application or database credentials.
+
+## Edge-to-ingestion mTLS
+
+Set `transportSecurity.enabled=true` and provision two Kubernetes Secrets. The Secret names and
+key names are configurable under `transportSecurity`; the defaults below describe the required
+contents:
+
+- the ingestion Secret contains `server.pfx`, `server-pfx-password`, `ca.crt`, and
+  `allowed-client-sha256.txt`;
+- the edge gateway Secret contains `client.pfx`, `client-pfx-password`, and `ca.crt`.
+
+`allowed-client-sha256.txt` contains one permitted client-certificate SHA-256 fingerprint per
+line. The server certificate must be valid for the ingestion Service DNS name used by
+`Cloud__ApiUrl`. Each PFX password is read directly from its Secret rather than placed in values.
+The chart projects only the certificate files needed by each workload, read-only, and never mounts
+the server private key into the edge gateway or the client private key into ingestion.
+
+For example, after creating Secrets named `industrial-ingestion-mtls` and
+`industrial-edge-mtls`, enable the mode with:
+
+```yaml
+transportSecurity:
+  enabled: true
+  ingestion:
+    secretName: industrial-ingestion-mtls
+  edgeGateway:
+    secretName: industrial-edge-mtls
+```
+
+This changes only the internal gRPC endpoint on port 8081 to HTTPS with required client
+certificates. REST startup, liveness, and readiness probes remain HTTP on port 8080.
 
 The edge gateway is a StatefulSet with one durable SQLite PVC per pod. The sensor emulator is a
 single-replica Deployment because `Emulator__ReplicaId` defines equipment ownership; demonstrate

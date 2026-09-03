@@ -87,7 +87,7 @@ cleanup() {
         compose ps -a >&2
         printf '\n--- bounded E2E logs ---\n' >&2
         compose logs --no-color --tail=200 \
-            edge-gateway ingestion-api diagnostics-worker postgres kafka >&2
+            dev-pki-init edge-gateway ingestion-api diagnostics-worker postgres kafka >&2
     fi
 
     printf '\n==> Removing isolated Compose project %s\n' "$E2E_PROJECT_NAME"
@@ -282,10 +282,20 @@ wait_until 'Kafka topic initialization' "$STARTUP_TIMEOUT" kafka_init_succeeded
 log 'Starting ingestion, edge, and diagnostics'
 compose up --detach ingestion-api edge-gateway diagnostics-worker
 wait_for_container_health edge-gateway "$STARTUP_TIMEOUT"
+wait_for_http_from_edge 'edge liveness' \
+    http://localhost:8080/health "$STARTUP_TIMEOUT"
 wait_for_http_from_edge 'ingestion readiness' \
     http://ingestion-api:8080/health/ready "$STARTUP_TIMEOUT"
 wait_for_http_from_edge 'diagnostics readiness' \
     http://diagnostics-worker:8080/health/ready "$STARTUP_TIMEOUT"
+
+log 'Checking that ingestion rejects a TLS client without a gateway certificate'
+if compose exec -T edge-gateway curl --silent --show-error \
+    --output /dev/null --max-time 10 \
+    --cacert /tls/ca.crt \
+    https://ingestion-api:8081/ >/dev/null 2>&1; then
+    fail 'ingestion completed a TLS request that supplied no gateway client certificate'
+fi
 
 MESSAGE_ID_1='11111111-1111-4111-8111-111111111111'
 MESSAGE_ID_2='22222222-2222-4222-8222-222222222222'

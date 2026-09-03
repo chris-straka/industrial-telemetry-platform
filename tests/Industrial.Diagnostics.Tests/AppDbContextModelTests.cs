@@ -1,5 +1,6 @@
 using Industrial.Diagnostics.Worker.Features.Diagnostics;
 using Industrial.Diagnostics.Worker.Infrastructure.Data;
+
 using Microsoft.EntityFrameworkCore;
 
 namespace Industrial.Diagnostics.Tests;

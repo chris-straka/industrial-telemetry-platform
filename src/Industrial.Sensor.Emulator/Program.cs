@@ -2,10 +2,13 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Threading.Channels;
+
 using Industrial.Sensor.Emulator.Configuration;
 using Industrial.Sensor.Emulator.Infrastructure;
 using Industrial.Shared;
+
 using Microsoft.Extensions.Options;
+
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;

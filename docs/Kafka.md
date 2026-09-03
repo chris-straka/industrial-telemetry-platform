@@ -193,11 +193,12 @@ behind it stops moving.
 
 Three ways to handle one, in rough order of how much work they are.
 
-**Dead letter queue.** Move the message to a separate topic where unprocessable messages
-land with the failure reason attached, then carry on. Nothing is lost and a human can go
-look. This is the right answer for anything you are audited on -- see `docs/Fintech.md`,
-where dropping a payment message is not an option. It is also the most machinery: another
-topic, another consumer, and a decision about who reads it.
+**Dead letter queue.** Copy the message to a separate topic where unprocessable messages
+land with the failure reason attached, wait for that write to be acknowledged, then carry on.
+The source is not silently lost and a human can inspect it until the DLQ's retention expires.
+This is the right shape for anything you are audited on -- see `docs/Fintech.md`, where dropping
+a payment message is not an option. It is also the most machinery: another topic, an operator or
+consumer that reads it, and a decision about retention and replay.
 
 **Retry N times, then drop.** Give each message a few attempts on the theory that some
 failures are transient, and give up after a counter runs out. This only earns its keep
@@ -207,20 +208,16 @@ identically on every attempt, so the retries are pure latency.
 **Drop and log.** Delete it, log it loudly, and count it on a metric so the loss is
 visible rather than silent.
 
-The gateway does the third (`UploaderWorker`, counted as `edge.telemetry.rejected`) and so
-does the consumer (`TelemetryConsumerWorker`, counted as `worker.telemetry.discarded`).
-
-For the gateway that is a deliberate scope decision, tracked in `TODO.md` as needing a
-quarantine table. Ingestion validation and the shared `TelemetryEnvelope` make consumer poison
-rare, but Kafka is still a system boundary: an operator or another producer can publish malformed
-bytes. Diagnostics therefore commits and meters poison explicitly; `TODO.md` tracks a DLQ so the
-bad payload can remain inspectable.
+The two durable poison boundaries use different forensic stores. If ingestion deterministically
+rejects an edge row, the gateway atomically copies it to bounded SQLite quarantine before removing
+it from the live queue. If Diagnostics receives malformed Kafka JSON or a tombstone, it publishes
+the source identity, bounded payload, and reason to `telemetry-events-dlq` before committing the
+source offset. A failed or ambiguous DLQ acknowledgement rewinds the source record instead.
 
 The gateway's version is milder than a classic poison message. The cloud names the ids it
 refuses in `rejected_message_ids` instead of failing the whole call, so the gateway never
-retries a refused reading and nothing queues behind it -- the head-of-line blocking that
-makes a poison message dangerous never starts. What is missing is only the audit trail:
-the reading is counted and logged with its `MessageId`, and then it is gone.
+retries a refused reading and nothing queues behind it. Its quarantine is an audit trail, not a
+retry queue: entries expire by age and count so forensic evidence cannot consume the disk forever.
 
 Worth keeping straight: "poison pill" also means a sentinel value deliberately pushed onto
 a queue to tell a consumer to shut down. Same words, opposite intent.

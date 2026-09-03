@@ -1,6 +1,8 @@
 using Confluent.Kafka;
+
 using Industrial.Diagnostics.Worker.Configuration;
 using Industrial.Diagnostics.Worker.Infrastructure.Data;
+
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;

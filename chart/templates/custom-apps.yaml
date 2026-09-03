@@ -70,7 +70,20 @@ spec:
           env:
             {{- include "industrial-platform.commonEnv" (dict "root" . "serviceName" "Industrial.Sensor.EdgeGateway") | nindent 12 }}
             - name: Cloud__ApiUrl
-              value: {{ printf "http://%s:8081" $ingestionName | quote }}
+              value: {{ printf "%s://%s:8081" (ternary "https" "http" .Values.transportSecurity.enabled) $ingestionName | quote }}
+            - name: TransportSecurity__Enabled
+              value: {{ .Values.transportSecurity.enabled | quote }}
+            {{- if .Values.transportSecurity.enabled }}
+            - name: TransportSecurity__ClientCertificatePath
+              value: /tls/edge/client.pfx
+            - name: TransportSecurity__ClientCertificatePassword
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "transportSecurity.edgeGateway.secretName is required when transportSecurity.enabled=true" .Values.transportSecurity.edgeGateway.secretName | quote }}
+                  key: {{ required "transportSecurity.edgeGateway.clientCertificatePasswordKey is required when transportSecurity.enabled=true" .Values.transportSecurity.edgeGateway.clientCertificatePasswordKey | quote }}
+            - name: TransportSecurity__TrustedServerCaPath
+              value: /tls/edge/ca.crt
+            {{- end }}
             - name: Buffer__Path
               value: /data/edge-buffer.db
             - name: Buffer__MaxDepth
@@ -114,10 +127,27 @@ spec:
           volumeMounts:
             - name: buffer-data
               mountPath: /data
+            {{- if .Values.transportSecurity.enabled }}
+            - name: edge-mtls
+              mountPath: /tls/edge
+              readOnly: true
+            {{- end }}
           {{- with .Values.edgeGateway.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+      {{- if .Values.transportSecurity.enabled }}
+      volumes:
+        - name: edge-mtls
+          secret:
+            secretName: {{ required "transportSecurity.edgeGateway.secretName is required when transportSecurity.enabled=true" .Values.transportSecurity.edgeGateway.secretName | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ required "transportSecurity.edgeGateway.clientCertificateKey is required when transportSecurity.enabled=true" .Values.transportSecurity.edgeGateway.clientCertificateKey | quote }}
+                path: client.pfx
+              - key: {{ required "transportSecurity.edgeGateway.trustedServerCaKey is required when transportSecurity.enabled=true" .Values.transportSecurity.edgeGateway.trustedServerCaKey | quote }}
+                path: ca.crt
+      {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: buffer-data
@@ -190,6 +220,23 @@ spec:
               value: {{ .Values.platform.kafka.eventsTopic | quote }}
             - name: Kafka__ReadinessTimeoutSeconds
               value: {{ .Values.ingestionApi.kafkaReadinessTimeoutSeconds | quote }}
+            - name: TransportSecurity__Enabled
+              value: {{ .Values.transportSecurity.enabled | quote }}
+            {{- if .Values.transportSecurity.enabled }}
+            - name: TransportSecurity__TrustedClientCaPath
+              value: /tls/ingestion/ca.crt
+            - name: TransportSecurity__AllowedClientFingerprintsPath
+              value: /tls/ingestion/allowed-client-sha256.txt
+            - name: Kestrel__Endpoints__Grpc__Url
+              value: https://+:8081
+            - name: Kestrel__Endpoints__Grpc__Certificate__Path
+              value: /tls/ingestion/server.pfx
+            - name: Kestrel__Endpoints__Grpc__Certificate__Password
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "transportSecurity.ingestion.secretName is required when transportSecurity.enabled=true" .Values.transportSecurity.ingestion.secretName | quote }}
+                  key: {{ required "transportSecurity.ingestion.serverCertificatePasswordKey is required when transportSecurity.enabled=true" .Values.transportSecurity.ingestion.serverCertificatePasswordKey | quote }}
+            {{- end }}
           startupProbe:
             httpGet:
               path: /health
@@ -210,10 +257,30 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 3
+          {{- if .Values.transportSecurity.enabled }}
+          volumeMounts:
+            - name: ingestion-mtls
+              mountPath: /tls/ingestion
+              readOnly: true
+          {{- end }}
           {{- with .Values.ingestionApi.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+      {{- if .Values.transportSecurity.enabled }}
+      volumes:
+        - name: ingestion-mtls
+          secret:
+            secretName: {{ required "transportSecurity.ingestion.secretName is required when transportSecurity.enabled=true" .Values.transportSecurity.ingestion.secretName | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ required "transportSecurity.ingestion.serverCertificateKey is required when transportSecurity.enabled=true" .Values.transportSecurity.ingestion.serverCertificateKey | quote }}
+                path: server.pfx
+              - key: {{ required "transportSecurity.ingestion.trustedClientCaKey is required when transportSecurity.enabled=true" .Values.transportSecurity.ingestion.trustedClientCaKey | quote }}
+                path: ca.crt
+              - key: {{ required "transportSecurity.ingestion.allowedClientFingerprintsKey is required when transportSecurity.enabled=true" .Values.transportSecurity.ingestion.allowedClientFingerprintsKey | quote }}
+                path: allowed-client-sha256.txt
+      {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment

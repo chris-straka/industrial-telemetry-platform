@@ -6,8 +6,8 @@ help:
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
 # .PHONY tells Make these are cmd names, not files on my hard drive
-.PHONY: help fleet dev k8s compose-up up upd down clean train restore test frontend ls migrate db-update db-check db-rows logs infra-up run-api run-worker run-em run-gw infra-init infra-apply infra-destroy \
-	chaos-cloud-down chaos-cloud-up chaos-gateway-kill queue verify demo-help
+.PHONY: help fleet dev k8s compose-up up upd down clean train restore test frontend ls migrate db-update db-check db-rows logs infra-up run-api run-worker run-em run-gw infra-validate infra-init infra-plan infra-apply infra-destroy \
+	chaos-cloud-down chaos-cloud-up chaos-gateway-kill queue verify e2e demo-help
 
 dev: ## Tilt dev loop
 	tilt up
@@ -124,19 +124,34 @@ chaos-gateway-kill: ## restart the gateway mid-outage; the buffer survives
 queue: ## current edge buffer depth
 	@curl -s http://localhost:5272/buffer | python3 -m json.tool
 
-# The end-to-end proof. SQL lives in scripts/verify.sql so it stays readable (backslash
-# line-continuations do NOT work inside single quotes in shell, so inlining multi-line
-# SQL in a recipe silently ships literal backslashes to psql).
-verify: ## require drained queue/outbox; report duplicates, sequence gaps, lag
-	@curl -fs http://localhost:5272/buffer | python3 -c 'import json, sys; depth = json.load(sys.stdin)["queueDepth"]; print(f"edge queue depth: {depth}"); raise SystemExit(depth != 0)'
-	@docker exec -i industrialplatform-postgres-1 psql -U admin -d industrial_db -q < scripts/verify.sql
+# Quiesces and later restores any running sensor containers so the queue, Kafka lag, and outbox
+# checks describe one stable snapshot instead of racing newly generated readings.
+verify: ## drain and audit IDs, duplicates, sequence gaps, and lag
+	@./scripts/verify.sh
 
-# Run this when you specifically want to test your Terraform code locally
-infra-init:
-	cd infra && terraform init
+e2e: ## run the isolated Docker failure/recovery suite
+	./scripts/e2e.sh
 
-infra-apply:
-	cd infra && terraform apply -var-file=dev.tfvars -auto-approve
+# The Terraform directory configures real external clusters. Validation is local and read-only;
+# state initialization and mutation require the caller to name every input explicitly.
+infra-validate: ## statically validate Terraform without contacting its S3 backend
+	cd infra && terraform fmt -check -recursive
+	cd infra && terraform init -backend=false -input=false
+	cd infra && terraform validate
 
-infra-destroy:
-	cd infra && terraform destroy -var-file=dev.tfvars -auto-approve
+infra-init: ## initialize Terraform; make infra-init backend=/secure/backend.hcl
+	@test -n "$(backend)" || (echo "usage: make infra-init backend=/secure/backend.hcl" >&2; exit 2)
+	cd infra && terraform init -backend-config="$(backend)"
+
+infra-plan: ## save a plan; make infra-plan vars=prod.tfvars plan=tfplan
+	@test -n "$(vars)" || (echo "usage: make infra-plan vars=prod.tfvars plan=tfplan" >&2; exit 2)
+	@test -n "$(plan)" || (echo "usage: make infra-plan vars=prod.tfvars plan=tfplan" >&2; exit 2)
+	cd infra && terraform plan -var-file="$(vars)" -out="$(plan)"
+
+infra-apply: ## apply a reviewed saved plan; make infra-apply plan=tfplan
+	@test -n "$(plan)" || (echo "usage: make infra-apply plan=tfplan" >&2; exit 2)
+	cd infra && terraform apply "$(plan)"
+
+infra-destroy: ## interactively destroy; make infra-destroy vars=prod.tfvars
+	@test -n "$(vars)" || (echo "usage: make infra-destroy vars=prod.tfvars" >&2; exit 2)
+	cd infra && terraform destroy -var-file="$(vars)"

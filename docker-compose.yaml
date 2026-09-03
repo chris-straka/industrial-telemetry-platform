@@ -1,12 +1,26 @@
 # In .NET, Foo__Bar becomes Foo:Bar in code
 services:
+  # Generates a private development CA plus separate server/client leaf volumes. The CA private
+  # key is never mounted into an application, and identities survive ordinary restarts.
+  dev-pki-init:
+    image: alpine:3.23
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - apk add --no-cache openssl >/dev/null && /usr/local/bin/create-dev-pki.sh
+    volumes:
+      - ./scripts/create-dev-pki.sh:/usr/local/bin/create-dev-pki.sh:ro
+      - dev_pki_authority_data:/authority
+      - ingestion_tls_data:/ingestion
+      - edge_gateway_tls_data:/edge
+
   web-dashboard:
     image: node:24-alpine
     working_dir: /app
     # Mount your local source code so Vite sees changes
     volumes:
       - ./src/Industrial.Web.Dashboard:/app
-      - /app/node_modules
+      - dashboard_node_modules:/app/node_modules
     # Run the dev server and bind to all interfaces so Docker can expose it
     command: sh -c "npm ci && npm run dev -- --host"
     ports:
@@ -49,19 +63,27 @@ services:
       context: .
       dockerfile: src/Industrial.Ingestion.Api/Dockerfile
     ports:
-      # 8080 = REST (HTTP/1.1), 8081 = gRPC (HTTP/2 cleartext).
-      # Two ports because there is no TLS here, so ALPN cannot negotiate the protocol
-      # and each endpoint has to declare it. See Kestrel config in appsettings.json.
+      # 8080 = REST/health (HTTP/1.1), 8081 = mutually authenticated gRPC (HTTPS/HTTP2).
       - "127.0.0.1:5089:8080"
       - "127.0.0.1:5091:8081"
+    volumes:
+      - ingestion_tls_data:/tls:ro
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - Kafka__BootstrapServers=kafka:9092
       - Kafka__EventsTopic=telemetry-events
       - Kafka__ReadinessTimeoutSeconds=3
+      - Kestrel__Endpoints__Grpc__Url=https://+:8081
+      - Kestrel__Endpoints__Grpc__Certificate__Path=/tls/server.pfx
+      - Kestrel__Endpoints__Grpc__Certificate__Password=
+      - TransportSecurity__Enabled=true
+      - TransportSecurity__TrustedClientCaPath=/tls/ca.crt
+      - TransportSecurity__AllowedClientFingerprintsPath=/tls/allowed-client-sha256.txt
       - OTel__ServiceName=Industrial.Ingestion.Api
       - OTel__Endpoint=http://otel-collector:4317
     depends_on:
+      dev-pki-init:
+        condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
     healthcheck:
@@ -77,7 +99,7 @@ services:
   #  docker compose restart edge-gateway  # gateway dies too; buffer survives on the volume
   #  docker compose start ingestion-api   # cloud returns; queue drains oldest-first
   #
-  # then check produced == ingested and duplicates == 0 (make verify).
+  # then quiesce and audit the drained pipeline for duplicate IDs and observed gaps (make verify).
   edge-gateway:
     image: edge-gateway
     build:
@@ -87,10 +109,15 @@ services:
       - "127.0.0.1:5272:8080"
     volumes:
       - edge_buffer_data:/data
+      - edge_gateway_tls_data:/tls:ro
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       # Points at the ingestion API's HTTP/2 port, not its REST port.
-      - Cloud__ApiUrl=http://ingestion-api:8081
+      - Cloud__ApiUrl=https://ingestion-api:8081
+      - TransportSecurity__Enabled=true
+      - TransportSecurity__ClientCertificatePath=/tls/client.pfx
+      - TransportSecurity__ClientCertificatePassword=
+      - TransportSecurity__TrustedServerCaPath=/tls/ca.crt
       - Buffer__Path=/data/edge-buffer.db
       - Buffer__MaxDepth=500000
       - Buffer__SettledIdRetentionHours=24
@@ -103,7 +130,10 @@ services:
       - Uploader__UploadTimeoutSeconds=30
       - OTel__ServiceName=Industrial.Sensor.EdgeGateway
       - OTel__Endpoint=http://otel-collector:4317
-    # no depends_on because gateway is meant to work without the cloud
+    # It waits only for its local identity material, never for the cloud.
+    depends_on:
+      dev-pki-init:
+        condition: service_completed_successfully
     # Readiness proves the local durable queue is writable. Cloud reachability deliberately does
     # not affect it: accepting locally while the cloud is down is the gateway's purpose.
     healthcheck:
@@ -220,7 +250,7 @@ services:
       retries: 5
 
   pgadmin:
-    image: dpage/pgadmin4
+    image: dpage/pgadmin4:9.14
     ports:
       - "127.0.0.1:5050:80"
     environment:
@@ -296,7 +326,7 @@ services:
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-events-dlq --partitions 6 --replication-factor 1
 
   kafka-ui:
-    image: provectuslabs/kafka-ui:latest
+    image: provectuslabs/kafka-ui:v0.7.2
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -306,11 +336,11 @@ services:
       kafka:
         condition: service_healthy
 
-  # Collector receives telemetry from the ingetstion API and worker and aggregates it
-  # It then sends the data to backends like prometheus and jaegar (decouples code from monitoring tools)
+  # Collector receives telemetry from the services and exports it to the configured backends,
+  # keeping backend-specific details out of application code.
   otel-collector:
     # "Contrib" version includes the extra plugins needed to talk to Prometheus and Kafka
-    image: otel/opentelemetry-collector-contrib
+    image: otel/opentelemetry-collector-contrib:0.151.0
     volumes:
       - ./monitoring/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
@@ -319,41 +349,90 @@ services:
       - "127.0.0.1:4318:4318" # OTLP HTTP
       - "127.0.0.1:8889:8889" # Prometheus exporter port
 
+  # The observability images run as distinct non-root users. Named volumes are initially owned
+  # by root, so prepare them once before the backends try to create their data directories.
+  observability-storage-init:
+    image: alpine:3.23
+    user: "0:0"
+    command:
+      - sh
+      - -ec
+      - |
+        chown -R 10001:10001 /loki /tempo
+        chown -R 472:0 /grafana
+        chown -R 65534:65534 /prometheus
+    volumes:
+      - loki_data:/loki
+      - tempo_data:/tempo
+      - grafana_data:/grafana
+      - prometheus_data:/prometheus
+
   loki:
-    image: grafana/loki:main-8703b0c
+    image: grafana/loki:3.7.2
     ports:
       - "127.0.0.1:3100:3100"
     volumes:
-      - ./monitoring/loki-config.yaml:/etc/loki/local-config.yaml
+      - ./monitoring/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/tmp/loki
     command: -config.file=/etc/loki/local-config.yaml
+    depends_on:
+      observability-storage-init:
+        condition: service_completed_successfully
 
   prometheus:
-    image: prom/prometheus
+    image: prom/prometheus:v3.11.3
     volumes:
-      - ./monitoring/prometheus.yaml:/etc/prometheus/prometheus.yml
+      - ./monitoring/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus-alerts.yaml:/etc/prometheus/rules/industrial-platform.yaml:ro
+      - prometheus_data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
+    depends_on:
+      observability-storage-init:
+        condition: service_completed_successfully
 
   tempo:
-    image: grafana/tempo:latest
+    image: grafana/tempo:3.0.2
     ports:
       - "127.0.0.1:3200:3200"
       # 4317 host port removed to avoid conflict with OTel Collector
     volumes:
-      - ./monitoring/tempo.yaml:/etc/tempo.yaml
+      - ./monitoring/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/tmp/tempo
     command: ["-config.file=/etc/tempo.yaml"]
+    depends_on:
+      observability-storage-init:
+        condition: service_completed_successfully
 
   grafana:
-    image: grafana/grafana
+    image: grafana/grafana:13.0.1
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      - ./monitoring/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - ./monitoring/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./monitoring/grafana-dashboard-provider.yaml:/etc/grafana/provisioning/dashboards/industrial-platform.yaml:ro
+      - ./monitoring/grafana-dashboard-industrial-platform.json:/var/lib/grafana/dashboards/industrial-platform.json:ro
+      - grafana_data:/var/lib/grafana/data
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_PATHS_DATA=/var/lib/grafana/data
+      # The provisioned dashboard uses built-in data sources only; do not download optional
+      # catalog apps during startup of this reproducible local stack.
+      - GF_PLUGINS_PREINSTALL_DISABLED=true
+    depends_on:
+      observability-storage-init:
+        condition: service_completed_successfully
 
 volumes:
+  dashboard_node_modules:
   postgres_data:
   edge_buffer_data:
   kafka_data:
+  loki_data:
+  prometheus_data:
+  tempo_data:
+  grafana_data:
+  dev_pki_authority_data:
+  ingestion_tls_data:
+  edge_gateway_tls_data:

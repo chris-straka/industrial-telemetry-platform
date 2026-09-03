@@ -1,14 +1,18 @@
 using Confluent.Kafka;
+
 using Google.GenAI;
+
 using Industrial.Diagnostics.Worker.Configuration;
 using Industrial.Diagnostics.Worker.Features.Diagnostics;
 using Industrial.Diagnostics.Worker.Features.Diagnostics.ML;
 using Industrial.Diagnostics.Worker.Infrastructure;
 using Industrial.Diagnostics.Worker.Infrastructure.Data;
 using Industrial.Shared;
+
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;

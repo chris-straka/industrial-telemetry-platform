@@ -132,5 +132,49 @@ instead would have made the cloud hop contiguous and split every reading's story
 Popularity: Jaeger was the king for years.
 Tempo is currently the fastest-growing because it integrates perfectly with logs (Loki) and metrics (Prometheus) inside Grafana.
 
-# Terminology
+# What Compose provisions
 
+The local stack is configured from checked-in artifacts rather than clicks in the Grafana UI:
+
+| artifact | purpose |
+| --- | --- |
+| `monitoring/otel-collector-config.yaml` | receives OTLP and batches metrics to Prometheus, logs to Loki, and traces to Tempo |
+| `monitoring/prometheus.yaml` | scrapes the collector exporter and loads rule files |
+| `monitoring/prometheus-alerts.yaml` | alerts on permanent loss, edge backlog, ingestion errors, diagnostics retry/DLQ failure, and alert-outbox backlog |
+| `monitoring/grafana-datasources.yaml` | provisions Prometheus, Loki, and Tempo plus trace-to-log navigation |
+| `monitoring/grafana-dashboard-provider.yaml` | loads dashboards from disk |
+| `monitoring/grafana-dashboard-industrial-platform.json` | the `Industrial Platform Reliability` dashboard |
+
+The dashboard deliberately separates permanent-loss counters from durable-backlog gauges. A
+sensor acquisition drop or exhausted delivery retry is gone before the reliability boundary; an
+edge queue depth or oldest-age increase means accepted rows are delayed but still owned by the
+gateway. DLQ and edge-quarantine panels show different poison paths: diagnostics publishes Kafka
+poison records to `telemetry-events-dlq`, while the gateway retains deterministic cloud rejections
+in bounded SQLite forensic storage.
+
+Prometheus, Loki, Tempo, and Grafana use named Compose volumes, so ordinary container restarts keep
+local history. `docker compose down -v` intentionally removes those volumes. This is demo
+persistence, not a production retention or backup policy.
+
+The Prometheus rules currently have no Alertmanager notification route, and their thresholds are
+engineering defaults rather than measured SLOs. Before claiming operational readiness, exercise
+them under sustained load and outages, tune the histogram buckets and evaluation windows, set disk
+retention budgets, and verify that a human receives and can follow a firing alert.
+
+# Liveness and readiness
+
+The web-hosted services expose `/health` as process liveness and `/health/ready` for their ability
+to accept new work:
+
+| service | readiness means |
+| --- | --- |
+| ingestion | the configured telemetry Kafka topic exists and has usable partitions |
+| diagnostics | Kafka topics are available, the consumer owns partitions, Postgres is reachable, and EF migrations are current |
+| Web API | both dashboard Kafka topics are available and the local broadcast consumer owns partitions |
+| edge gateway | its SQLite queue accepts a write transaction |
+
+Cloud reachability does not belong in edge readiness. Store-and-forward exists so the gateway can
+remain ready to durably accept LAN readings while ingestion is unavailable; use
+`edge_cloud_reachable`, queue depth, and oldest age to observe that outage instead.
+
+# Terminology

@@ -54,11 +54,11 @@ because they tag `edge.upload.failures` differently and send an operator to diff
 machines -- one to the contract, one to the credentials.
 
 Caveat worth saying out loud: `TelemetryService` returns none of these statuses. It
-answers OK and names its per-reading rejections in `rejected_message_ids`. `Malformed`
-and `Refused` come from a proxy, a future auth interceptor, or a version skew that makes
-the two sides disagree about the contract itself. The classification is defensive, and
-the honest version of that sentence is "this arm is currently unreachable in this
-deployment".
+answers OK and names its per-reading rejections in `rejected_message_ids`. A failed
+Compose client-certificate check ends the TLS handshake before the service can return a
+gRPC `Unauthenticated` status. `Malformed` and `Refused` therefore remain defensive
+classifications for a proxy, application auth interceptor, or version skew that makes
+the two sides disagree about the contract.
 
 `ResourceExhausted` is deliberately left in the transient bucket. It is a rate limit as
 often as it is "your message is too large", and backoff is the right answer to the first.
@@ -78,8 +78,10 @@ the new data is the data someone is watching a dashboard for.
 evidence of one it did.
 
 **Have the cloud name the offender (chosen).** `TelemetryResponse.rejected_message_ids`
-carries the ids the server validated and refused. The gateway deletes exactly those,
-counts them on `edge.telemetry.rejected`, and keeps sending full batches throughout.
+carries the ids the server validated and refused. The gateway atomically copies exactly
+those original rows to its bounded quarantine, adds their settled-ID markers, removes
+them from the live queue, counts them on `edge.telemetry.rejected`, and keeps sending
+full batches throughout.
 
 **Rejected: isolate by resending at batch size 1.** A whole-call `InvalidArgument` says
 only "something in there was bad", so finding out which meant re-sending the batch one
@@ -106,25 +108,31 @@ carries on, no one number can distinguish "the reading I refused" from "the read
 never reached". The order of the batch stops being load-bearing at the same time, since
 the response names readings rather than positions.
 
-# This drop is real loss, and the audit reports the evidence it can see
+# This is permanent delivery loss, with bounded forensic evidence
 
 A rejected reading can create a sequence gap inside an emulator run. `make verify` reports those
 gaps using inferred restart boundaries; it does not use the invalid `MAX(sequence) - COUNT(*)`
 calculation across all restarts. A database-only audit still cannot assign a gap to an intentional
 sensor drop versus a downstream rejection, nor can it infer a dropped tail after the final row.
-The reliable evidence for a cloud rejection is therefore the error log plus
-`edge.telemetry.rejected`. The alternative was a stall that eventually loses far more new data and
-reports no forward progress.
+The reliable edge-side evidence for a cloud rejection is therefore the error log,
+`edge.telemetry.rejected`, and the original payload in `QuarantinedTelemetryRecords`. Operators can
+inspect the newest rows through `GET /buffer/quarantine?limit=100`; the endpoint caps each response
+at 200 rows.
+
+Quarantine is not another delivery queue. Ingestion has deterministically refused the reading, so
+the uploader must not send it forever. Quarantine retention defaults to 168 hours and 10,000 rows;
+age and count cleanup run in the same durable store that owns settlement. When either bound removes
+a row, only its forensic copy disappears—the reading had already left the delivery contract when
+the cloud explicitly rejected it.
 
 # Not handled
 
-- No dead letter. A dropped reading is gone, not parked. A second SQLite table would keep
-  it for inspection, at the cost of a table nothing drains and a policy for when it is
-  emptied.
-- Nothing bounds how much the cloud may reject. A validation rule someone tightens, or a
-  proto skew that makes every reading look invalid, empties the buffer as fast as batches
-  go out and every drop is individually correct. `edge.telemetry.rejected` is the only
-  thing that says so, which makes it an alert, not a graph.
+- Quarantine has no export or operator acknowledgement workflow. Its time and count bounds protect
+  disk space, which also means evidence expires unless an operator copies it elsewhere.
+- Nothing rate-limits how much the cloud may reject. A validation rule someone tightens, or a proto
+  skew that makes every reading look invalid, can empty the live buffer as fast as batches go out
+  while the bounded quarantine evicts older evidence. `edge.telemetry.rejected` is therefore an
+  alert, not merely a graph.
 - `_consecutiveFailures` and `_consecutiveUnreachable` form an implicit state machine on a
   `BackgroundService`. They are deliberately not one field: `_consecutiveFailures` sizes
   the backoff and is bumped by refusals and local faults too, while

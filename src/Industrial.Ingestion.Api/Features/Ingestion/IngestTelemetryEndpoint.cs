@@ -1,8 +1,12 @@
 using System.Text.Json;
+
 using Confluent.Kafka;
+
 using FluentValidation;
+
 using Industrial.Ingestion.Api.Configuration;
 using Industrial.Shared;
+
 using Microsoft.Extensions.Options;
 
 namespace Industrial.Ingestion.Api.Features.Ingestion;

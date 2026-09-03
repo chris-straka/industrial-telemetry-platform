@@ -1,5 +1,7 @@
 using System.Data.Common;
+
 using Industrial.Sensor.EdgeGateway.Features.Buffer;
+
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 

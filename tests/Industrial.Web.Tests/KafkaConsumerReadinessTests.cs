@@ -1,4 +1,5 @@
 using Industrial.Web.Api.Infrastructure;
+
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace Industrial.Web.Tests;

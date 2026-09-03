@@ -388,8 +388,8 @@
         },
         {
           "editorMode": "code",
-          "expr": "sum(rate(web_messages_relayed_total[$__rate_interval]))",
-          "legendFormat": "SignalR relayed",
+          "expr": "sum(rate(web_messages_relayed_total{messaging_destination_name=\"telemetry-events\"}[$__rate_interval]))",
+          "legendFormat": "Telemetry relayed",
           "range": true,
           "refId": "E"
         }

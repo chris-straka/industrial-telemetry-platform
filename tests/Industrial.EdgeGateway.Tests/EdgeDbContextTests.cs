@@ -1,4 +1,5 @@
 using Industrial.Sensor.EdgeGateway.Features.Buffer;
+
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 

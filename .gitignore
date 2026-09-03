@@ -47,6 +47,14 @@ coverage/
 *.coverage
 *.coveragexml
 
+# Terraform local state, provider cache, and saved plans
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
 # Environment variables
 .env
 .env.*
@@ -57,4 +65,3 @@ coverage/
 
 # My stuff
 AI.md
-

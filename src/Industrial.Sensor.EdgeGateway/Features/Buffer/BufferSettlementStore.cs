@@ -1,4 +1,5 @@
 using Industrial.Sensor.EdgeGateway.Configuration;
+
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -56,6 +57,15 @@ public sealed class BufferSettlementStore(
             await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
             var settledAt = DateTimeOffset.UtcNow;
+            var rejectedRows = settledRows.Where(row => rejected.Contains(row.MessageId)).ToList();
+            HashSet<string> alreadyQuarantinedIds = rejectedRows.Count == 0
+                ? []
+                : (await db.QuarantinedTelemetryRecords
+                    .Where(row => rejected.Contains(row.MessageId))
+                    .Select(row => row.MessageId)
+                    .ToListAsync(cancellationToken))
+                    .ToHashSet(StringComparer.Ordinal);
+
             db.SettledMessages.AddRange(
                 settledRows.Select(row => new SettledMessage
                 {
@@ -64,8 +74,11 @@ public sealed class BufferSettlementStore(
                 })
             );
             db.QuarantinedTelemetryRecords.AddRange(
-                settledRows
-                    .Where(row => rejected.Contains(row.MessageId))
+                rejectedRows
+                    // Older versions could re-admit an ID after its settled marker expired while
+                    // its longer-lived quarantine row remained. Preserve the first forensic copy
+                    // and still let that already-queued duplicate settle instead of wedging here.
+                    .Where(row => !alreadyQuarantinedIds.Contains(row.MessageId))
                     .Select(row => new QuarantinedTelemetryRecord
                     {
                         MessageId = row.MessageId,

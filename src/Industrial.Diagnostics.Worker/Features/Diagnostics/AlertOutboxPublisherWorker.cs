@@ -1,8 +1,11 @@
 using System.Text;
+
 using Confluent.Kafka;
+
 using Industrial.Diagnostics.Worker.Configuration;
 using Industrial.Diagnostics.Worker.Infrastructure;
 using Industrial.Diagnostics.Worker.Infrastructure.Data;
+
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 

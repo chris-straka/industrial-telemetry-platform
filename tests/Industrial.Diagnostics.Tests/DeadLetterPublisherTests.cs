@@ -1,10 +1,13 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text;
 using System.Text.Json;
+
 using Confluent.Kafka;
+
 using Industrial.Diagnostics.Worker.Configuration;
 using Industrial.Diagnostics.Worker.Features.Diagnostics;
 using Industrial.Diagnostics.Worker.Infrastructure;
+
 using Microsoft.Extensions.Options;
 
 namespace Industrial.Diagnostics.Tests;

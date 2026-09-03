@@ -1,15 +1,20 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+
 using Confluent.Kafka;
+
 using Google.GenAI;
+
 using Industrial.Diagnostics.Worker.Configuration;
 using Industrial.Diagnostics.Worker.Features.Diagnostics.ML;
 using Industrial.Diagnostics.Worker.Infrastructure;
 using Industrial.Diagnostics.Worker.Infrastructure.Data;
 using Industrial.Shared;
+
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+
 using Npgsql;
 
 namespace Industrial.Diagnostics.Worker.Features.Diagnostics;

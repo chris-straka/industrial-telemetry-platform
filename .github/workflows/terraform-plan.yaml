@@ -1,35 +1,42 @@
-name: Terraform Plan
+name: Terraform Validate
 
 on:
-    pull_request:
-        paths:
-            - "infra/**"
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/terraform-plan.yaml"
+      - ".github/workflows/terraform-production-plan.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - ".github/workflows/terraform-plan.yaml"
+      - ".github/workflows/terraform-production-plan.yaml"
+
+permissions:
+  contents: read
 
 jobs:
-    plan:
-        runs-on: ubuntu-latest
-        defaults:
-            run:
-                working-directory: infra
-        steps:
-            - uses: actions/checkout@v4
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v6.0.2
 
-            - uses: hashicorp/setup-terraform@v3
-              with:
-                  terraform_version: 1.15.0
+      - uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: 1.16.0
 
-            - name: Terraform Init
-              run: terraform init
+      - name: Check formatting
+        run: terraform fmt -check -recursive
 
-            - name: Terraform Validate
-              run: terraform validate
+      # Static validation downloads provider schemas but does not contact S3, Kubernetes, Kafka,
+      # or Helm repositories. A real plan belongs in the protected environment that has access.
+      - name: Initialize providers without a backend
+        run: terraform init -backend=false -input=false
 
-            - name: Plan dev
-              run: terraform plan -var-file=dev.tfvars -input=false -no-color
-              env:
-                  TF_VAR_bootstrap_servers: ${{ secrets.DEV_KAFKA_BOOTSTRAP }}
-
-            - name: Plan prod
-              run: terraform plan -var-file=prod.tfvars -input=false -no-color
-              env:
-                  TF_VAR_bootstrap_servers: ${{ secrets.PROD_KAFKA_BOOTSTRAP }}
+      - name: Validate configuration
+        run: terraform validate -no-color

@@ -1,13 +1,17 @@
 using System.Diagnostics;
 using System.Text;
+
 using Confluent.Kafka;
+
 using Industrial.Shared;
 using Industrial.Web.Api.Configuration;
 using Industrial.Web.Api.Infrastructure;
+
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
+
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;

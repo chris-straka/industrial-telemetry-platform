@@ -131,9 +131,10 @@ unchanged through every hop.
 
 ## Migration note
 
-The schema is a single `InitialCreate`. It was squashed from two migrations once the
-store-and-forward refactor settled, which is safe only because nothing outside a
-throwaway dev database had ever applied them.
+The original schema history was squashed into `InitialCreate` while nothing outside a throwaway
+development database had applied it. Later outbox and anomaly-audit changes are ordinary appended
+migrations. Once any migration is deployed to a persistent environment, renumbering or rewriting
+that history would no longer be safe.
 
 Worth knowing why it was squashed rather than appended to: EF generates `AddColumn` with a
 constant `defaultValue` so existing rows have something to hold, and that default **stays
@@ -141,5 +142,5 @@ on the column afterwards**. `MessageId uuid NOT NULL DEFAULT '00000000-...'` mea
 insert that forgets to set it gets `Guid.Empty` instead of an error — and the *second* such
 insert trips the unique index. A `CreateTable` in a squashed migration emits no defaults at
 all, so the problem disappears rather than needing a follow-up `DROP DEFAULT`. This is the
-same "no fallback defaults" rule the configuration section of `CLAUDE.md` applies to
+same "no fallback defaults" rule the configuration section of `AGENTS.md` applies to
 `appsettings`, one layer down.

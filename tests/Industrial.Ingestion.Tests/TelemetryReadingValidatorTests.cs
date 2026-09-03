@@ -1,4 +1,5 @@
 using Google.Protobuf.WellKnownTypes;
+
 using Industrial.Ingestion.Api;
 using Industrial.Ingestion.Api.Features.Ingestion;
 

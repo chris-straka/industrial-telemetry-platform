@@ -1,4 +1,18 @@
 groups:
+    - name: industrial-platform-observability
+      rules:
+          - alert: OpenTelemetryCollectorScrapeDown
+            expr: up{job="otel-collector"} == 0
+            for: 2m
+            labels:
+                severity: critical
+                component: observability
+            annotations:
+                summary: Prometheus cannot scrape the OpenTelemetry Collector
+                description: >-
+                    The single metrics aggregation endpoint has been unreachable for two minutes.
+                    Application alert expressions may have no input while this scrape is down.
+
     - name: industrial-platform-telemetry-loss
       rules:
           - alert: SensorAcquisitionBufferDroppingReadings

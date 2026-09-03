@@ -24,13 +24,13 @@ projects:
         text: "Developed an AI pipeline combining ML.NET time-series anomaly detection with LLM diagnostics to automatically convert sensor failures into actionable corrective reports."
       - id: observability
         track: both
-        text: "Configured distributed observability using OpenTelemetry, Prometheus, and Grafana to track microservice health, aggregate logs, and trace latency bottlenecks."
+        text: "Configured OpenTelemetry metrics, logs, and traces with a checked-in Grafana dashboard and Prometheus alerts for loss, backlog, retries, dead letters, and alert-outbox health."
       - id: store-forward
         track: swe
         text: "Engineered an edge gateway with a durable SQLite WAL buffer (synchronous=FULL) to survive total cloud outages, shedding excess load via HTTP 429 backpressure to keep the buffer bounded."
       - id: idempotency
         track: swe
-        text: "Designed the pipeline for at-least-once delivery over gRPC and Kafka, achieving effectively-once processing by minting UUIDv7 idempotency keys at the sensor origin and deduplicating in Postgres."
+        text: "Designed the post-gateway pipeline for at-least-once delivery over gRPC and Kafka, minting UUIDv7 idempotency keys at the sensor origin and deduplicating replays in Postgres."
       - id: tracing
         track: swe
         text: "Implemented distributed W3C tracing, metrics, and logging across the pipeline using OpenTelemetry, aggregating into Prometheus, Tempo, and Loki for Grafana dashboards."
@@ -51,7 +51,7 @@ projects:
         text: "Built a bounded SQLite quarantine table that preserves rejected readings with their original payload and reason code, written in the same transaction as the live-row delete so poison records stay auditable."
       - id: outbox
         track: swe
-        text: "Guaranteed alert delivery with a transactional outbox, committing each detected anomaly and its alert in a single Postgres transaction and deduplicating publisher retries by message ID."
+        text: "Protected alert delivery with a transactional outbox, committing each detected anomaly and its alert in one Postgres transaction while dashboard consumers deduplicate publisher retries by message ID."
       - id: dlq
         track: swe
         text: "Added a Kafka dead-letter path that durably copies malformed records with their source partition and offset before committing, keeping bad payloads inspectable without stalling the consumer."
@@ -66,10 +66,16 @@ projects:
         text: "Modeled event time and processing time separately so readings flushed after a 30-minute outage retain their true occurrence time, with sequence numbers exposing dropped ranges."
       - id: health
         track: both
-        text: "Added liveness and dependency-aware readiness probes across all services, covering Kafka partition assignment, Postgres, and SQLite writability."
+        text: "Added separate liveness and dependency-aware readiness probes across the gateway and cloud services, covering Kafka topics and partition assignment, current Postgres migrations, and SQLite writability."
       - id: e2e-chaos
         track: swe
-        text: "Wrote an isolated Docker failure-injection harness that kills ingestion, Postgres, and Kafka mid-run and asserts queue drain, exactly one row per accepted ID, offset rewind, and outbox recovery."
+        text: "Wrote an isolated Docker failure-injection harness that stops ingestion, Postgres, and Kafka mid-run and asserts queue recovery, one row per accepted ID, consumer retry, DLQ publication, and outbox recovery."
+      - id: mtls
+        track: csa
+        text: "Secured the edge-to-ingestion gRPC hop in Docker Compose with mutual TLS, a private development CA, and a SHA-256 client-certificate allowlist that models independently revocable gateway identities."
+      - id: ml-provenance
+        track: swe
+        text: "Persisted detector score, p-value, artifact hash, and warm-up history count beside each telemetry decision so historical anomaly classifications retain their runtime provenance."
       - id: schema-evolution
         track: swe
         text: "Enforced Protobuf schema-evolution discipline on the gRPC contract with frozen field numbers and reserved tags, backed by a regression test that fails CI on a renumbered field."
@@ -90,13 +96,13 @@ projects:
         text: "Set up GitHub Actions CI running a warnings-as-errors build, EF Core migration-drift detection, tests with coverage, frontend lint and build, Compose validation, and Helm chart lint and render."
       - id: reliability-boundary
         track: both
-        text: "Defined an explicit reliability boundary — best-effort before the gateway's 202 Accepted, durably at-least-once after it — and proved it with regression tests, chaos targets, and an automated audit."
+        text: "Defined an explicit reliability boundary — best-effort before the gateway's 202 Accepted, durably at-least-once after it — and backed it with regression tests, an isolated failure harness, chaos targets, and an automated audit."
 
 
       # sharper variants of working-set lines
       - id: arch-alt
         track: both
-        text: "Architected a 7-service event-driven telemetry platform using .NET 10, Apache Kafka, and Postgres, running as a 19-container Docker Compose stack with full observability."
+        text: "Architected a multi-service event-driven telemetry platform using .NET 10, Apache Kafka, and Postgres, with a Docker Compose runtime and provisioned metrics, logs, and traces."
       - id: store-forward-alt
         track: swe
         text: "Engineered an edge gateway buffering 500K readings in SQLite (WAL, synchronous=FULL) to survive total cloud outages, shedding overflow via HTTP 429 and Retry-After backpressure."
@@ -124,9 +130,9 @@ projects:
       - id: api-relay-subsecond
         track: swe
         text: "TODO: Developed an ASP.NET Web API relaying Kafka events via a SignalR WebSocket bridge, pushing sub-second updates to a React/Vite frontend."
-      - id: mtls
+      - id: production-security
         track: csa
-        text: "TODO: Secured service-to-service traffic with mTLS, issuing a per-gateway client certificate so a single device can be revoked independently."
+        text: "TODO: Extended workload identity and encrypted transport to sensors, Kafka, Postgres, and observability, backed by production certificate enrollment, rotation, and revocation."
       - id: perf
         track: both
         text: "TODO: Sustained N readings/sec end to end at Xms p95 Kafka-to-dashboard latency (fill in real measured numbers)."
@@ -135,9 +141,6 @@ projects:
       - id: ml-dataset
         track: swe
         text: "TODO: Generated a labeled telemetry dataset covering gradual degradation and sensor drift, snapshotted and versioned from Postgres for reproducible training runs."
-      - id: ml-provenance
-        track: swe
-        text: "TODO: Persisted per-decision model provenance including score, p-value, model version, and warm-up length, making every anomaly decision auditable and reproducible."
       - id: ml-training
         track: both
         text: "TODO: Trained and evaluated a supervised anomaly model on labeled equipment telemetry, reporting precision and recall against a held-out set rather than a fixed-threshold detector."

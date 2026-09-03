@@ -11,6 +11,43 @@ public class CloudOptions
     public string ApiUrl { get; set; } = string.Empty;
 }
 
+public sealed class TransportSecurityOptions : IValidatableObject
+{
+    public const string Section = "TransportSecurity";
+
+    public bool Enabled { get; set; }
+
+    public string ClientCertificatePath { get; set; } = string.Empty;
+
+    // Prefer an injected secret in real deployments. The Compose-only development certificate
+    // deliberately uses an empty password because its private key lives in an isolated volume.
+    public string? ClientCertificatePassword { get; set; }
+
+    public string TrustedServerCaPath { get; set; } = string.Empty;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (!Enabled)
+            yield break;
+
+        if (string.IsNullOrWhiteSpace(ClientCertificatePath))
+        {
+            yield return new ValidationResult(
+                "TransportSecurity:ClientCertificatePath is required when mTLS is enabled.",
+                [nameof(ClientCertificatePath)]
+            );
+        }
+
+        if (string.IsNullOrWhiteSpace(TrustedServerCaPath))
+        {
+            yield return new ValidationResult(
+                "TransportSecurity:TrustedServerCaPath is required when mTLS is enabled.",
+                [nameof(TrustedServerCaPath)]
+            );
+        }
+    }
+}
+
 public class BufferOptions
 {
     public const string Section = "Buffer";

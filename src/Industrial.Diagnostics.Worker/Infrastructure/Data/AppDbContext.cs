@@ -1,4 +1,5 @@
 using Industrial.Diagnostics.Worker.Features.Diagnostics;
+
 using Microsoft.EntityFrameworkCore;
 
 namespace Industrial.Diagnostics.Worker.Infrastructure.Data;

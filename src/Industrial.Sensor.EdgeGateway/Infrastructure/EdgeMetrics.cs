@@ -1,4 +1,5 @@
 using System.Diagnostics.Metrics;
+
 using Industrial.Sensor.EdgeGateway.Features.Buffer;
 
 namespace Industrial.Sensor.EdgeGateway.Infrastructure;
@@ -42,7 +43,7 @@ public sealed class EdgeMetrics : IDisposable
         Duplicates = _meter.CreateCounter<long>(
             "edge.telemetry.duplicate",
             unit: "{reading}",
-            description: "Readings acknowledged as duplicates because the MessageId was buffered or recently settled."
+            description: "Readings acknowledged as duplicates because the MessageId was buffered, recently settled, or quarantined."
         );
 
         Uploaded = _meter.CreateCounter<long>(

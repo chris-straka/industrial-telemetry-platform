@@ -1,5 +1,7 @@
 using Confluent.Kafka;
+
 using Industrial.Web.Api.Configuration;
+
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 

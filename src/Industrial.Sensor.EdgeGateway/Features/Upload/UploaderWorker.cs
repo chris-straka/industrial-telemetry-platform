@@ -1,10 +1,14 @@
 using System.Diagnostics;
+
 using Google.Protobuf.WellKnownTypes;
+
 using Grpc.Core;
+
 using Industrial.Ingestion.Api; // generated from Protos/telemetry.proto
 using Industrial.Sensor.EdgeGateway.Configuration;
 using Industrial.Sensor.EdgeGateway.Features.Buffer;
 using Industrial.Sensor.EdgeGateway.Infrastructure;
+
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
