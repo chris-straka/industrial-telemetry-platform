@@ -2,12 +2,30 @@
 
 .NET microservice platform that ingests telemetry from simulated industrial equipment and flags
 anomalies with an online ML.NET detector plus an AI-generated diagnosis. Docker Compose is the
-currently supported runtime; the cloud deployment files are explicitly unfinished.
+currently supported runtime; the cloud deployment files are unfinished.
 
 The sensor emulator is deliberately best-effort, like a constrained device: it keeps acquiring
 while the network is down and may shed samples when its bounded RAM/retry budget is exhausted.
 Once the edge gateway returns `202`, however, the valid reading is on durable local storage and is
 retained through cloud and gateway outages until the cloud settles it.
+
+# Quickstart
+
+Docker and Make are the only requirements for the demo path.
+
+```sh
+git clone git@github.com:chris-straka/industrial-telemetry-platform.git
+cd industrial-telemetry-platform
+cp .env.example .env    # set GEMINI_API_KEY; the diagnostics worker will not start without it
+make upd
+```
+
+The dashboard is at <http://127.0.0.1:5173> and Grafana at <http://127.0.0.1:3000>. Give the
+pipeline a few seconds to produce its first readings, then see [The demo](#the-demo) to take the
+cloud down and watch the edge buffer absorb the outage.
+
+`Gemini:ApiKey` is validated at startup, so an empty key fails the worker rather than degrading it.
+The other services run without one.
 
 # Data flow
 
@@ -45,13 +63,14 @@ diagnostics-worker          │                      web-api
 
 # Delivery guarantees
 
-There are two explicit reliability zones:
+The gateway's `202` splits the pipeline into two reliability zones.
 
-- **Before gateway `202`: best-effort.** A full sensor channel drops a new sample; an HTTP send
-  that exhausts its bounded retry policy drops the dequeued sample. Separate metrics count both.
-- **After gateway `202`: durable at-least-once.** The gateway has fsynced the reading to SQLite.
-  Ambiguous gRPC/Kafka failures retry, and the reading is deleted only after ingestion names its
-  `MessageId` accepted or permanently rejected.
+Before it, delivery is best-effort. A full sensor channel drops a new sample, and an HTTP send that
+exhausts its bounded retry policy drops the dequeued sample. Separate metrics count both.
+
+After it, delivery is durable at-least-once. The gateway has fsynced the reading to SQLite,
+ambiguous gRPC/Kafka failures retry, and the reading is deleted only after ingestion names its
+`MessageId` accepted or permanently rejected.
 
 A deterministic cloud rejection is permanent loss from the live pipeline, not successful
 delivery. The gateway atomically preserves the original row in a bounded SQLite quarantine before
@@ -62,15 +81,14 @@ ambiguous, the source record is retried.
 
 Every reading carries an immutable `MessageId` minted by the sensor. SQLite protects live and
 recently settled gateway IDs; Postgres has a unique index for Kafka replay. Duplicate live events
-and alerts are also filtered by a bounded ID window in the dashboard.
-
-> at-least-once delivery + an idempotent sink = effectively-once persisted state
+and alerts are also filtered by a bounded ID window in the dashboard. At-least-once delivery into
+an idempotent sink leaves the persisted state effectively-once.
 
 Anomaly publication uses a transactional outbox: the diagnostic row and pending alert commit in
 one Postgres transaction, then a separate worker publishes the alert. A crash after Kafka's ACK can
 still publish twice, which is why the alert keeps the same `MessageId`.
 
-Two clocks are carried end to end so an outage stays measurable:
+The pipeline carries two clocks so an outage stays measurable:
 
 | field | whose clock | meaning |
 | --- | --- | --- |
@@ -81,7 +99,7 @@ Without `OccurredAt`, readings drained after a 30 minute outage would all claim 
 happened in the seconds it took to flush the queue.
 
 A monotonic `SequenceNumber` makes gaps inside an emulator run visible. The emulator resets it on
-restart and can intentionally drop before `202`, so a Postgres-only count is an audit signal—not
+restart and can drop samples before `202`, so a Postgres-only count is an audit signal rather than
 proof of the downstream guarantee or of an unseen tail.
 
 # The demo
@@ -116,7 +134,7 @@ volumes on every run.
 The gateway and cloud services expose `/health` for process liveness and `/health/ready` for the
 dependencies needed to accept new work. Readiness checks Kafka topic/partition availability,
 Postgres reachability and current migrations, or SQLite writability as appropriate. Cloud
-reachability is deliberately a gateway metric rather than gateway readiness: accepting onto local
+reachability is a gateway metric rather than gateway readiness: accepting onto local
 disk during a cloud outage is its job.
 
 Compose generates a private development CA, an ingestion server certificate, and a gateway client
@@ -131,11 +149,19 @@ observability traffic remain plaintext and unauthenticated inside the Compose ne
 
 # Install
 
-- [tilt](https://tilt.dev/)
-- [Make](https://www.gnu.org/software/make/)
+To run the demo:
+
 - [docker](https://www.docker.com/)
-- [.NET](https://dotnet.microsoft.com/en-us/download)
-- [Node](https://nodejs.org/en)
+- [Make](https://www.gnu.org/software/make/)
+
+To build and test outside Compose:
+
+- [.NET](https://dotnet.microsoft.com/en-us/download) for `make test` and the individual services
+- [Node](https://nodejs.org/en) for the dashboard's Vite dev server
+
+For the unfinished deployment material, which renders and plans but has never been applied:
+
+- [tilt](https://tilt.dev/)
 - [Terraform](https://developer.hashicorp.com/terraform/install)
 
 # Ports
@@ -155,9 +181,10 @@ Compose publishes development ports on `127.0.0.1` only.
 
 # Notes
 
-Design notes live in [docs/](docs/) — [Networking](docs/Networking.md),
-[Kafka](docs/Kafka.md), [Observability](docs/Observability.md), [DB](docs/DB),
-[ML](docs/ML), and [Security](docs/Security.md). Known gaps and planned work are in
+Design notes live in [docs/](docs/): [Networking](docs/Networking.md),
+[Kafka](docs/Kafka.md), [Observability](docs/Observability.md), [Postgres](docs/DB/Postgres.md),
+[SQLite](docs/DB/SQLite.md), [MLOps](docs/ML/MLOps.md), and [Security](docs/Security.md). Known
+gaps and planned work are in
 [TODO.md](TODO.md).
 
 Docker Compose is the supported runnable/demo path. The checked-in Helm and Terraform material can
