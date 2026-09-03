@@ -6,7 +6,9 @@ using Industrial.Diagnostics.Worker.Features.Diagnostics.ML;
 using Industrial.Diagnostics.Worker.Infrastructure;
 using Industrial.Diagnostics.Worker.Infrastructure.Data;
 using Industrial.Shared;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -80,6 +82,7 @@ builder
     );
 
 builder.Services.AddSingleton<WorkerMetrics>();
+builder.Services.AddSingleton<DiagnosticsConsumerReadiness>();
 
 // Kafka
 builder.Services.AddSingleton(sp =>
@@ -98,6 +101,35 @@ builder.Services.AddSingleton(sp =>
         .SetErrorHandler((_, e) => logger.LogError("Kafka Producer Error: {Reason}", e.Reason))
         .Build();
 });
+builder.Services.AddSingleton<IDeadLetterTransport, KafkaDeadLetterTransport>();
+builder.Services.AddSingleton<IDeadLetterPublisher, DeadLetterPublisher>();
+builder.Services.AddSingleton<IAdminClient>(
+    new AdminClientBuilder(
+        new AdminClientConfig
+        {
+            BootstrapServers = kafka.BootstrapServers,
+            AllowAutoCreateTopics = false,
+        }
+    ).Build()
+);
+builder
+    .Services.AddHealthChecks()
+    .AddCheck<DiagnosticsConsumerReadiness>(
+        "kafka_assignment",
+        failureStatus: HealthStatus.Unhealthy,
+        tags: ["ready"]
+    )
+    .AddCheck<DiagnosticsKafkaReadinessCheck>(
+        "kafka_topics",
+        failureStatus: HealthStatus.Unhealthy,
+        tags: ["ready"],
+        timeout: TimeSpan.FromSeconds(KafkaOptions.MaximumReadinessTimeoutSeconds + 1)
+    )
+    .AddCheck<DiagnosticsDatabaseReadinessCheck>(
+        "postgres_migrations",
+        failureStatus: HealthStatus.Unhealthy,
+        tags: ["ready"]
+    );
 
 // Setup AI features
 builder.Services.AddSingleton(
@@ -144,5 +176,12 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapGet("/health", () => Results.Ok());
+app.MapHealthChecks(
+    "/health/ready",
+    new HealthCheckOptions
+    {
+        Predicate = registration => registration.Tags.Contains("ready"),
+    }
+);
 
 app.Run();

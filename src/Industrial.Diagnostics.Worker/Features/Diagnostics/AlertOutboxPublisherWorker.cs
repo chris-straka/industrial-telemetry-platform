@@ -29,6 +29,13 @@ public sealed class AlertOutboxPublisherWorker(
     private readonly TimeSpan _maxBackoff = TimeSpan.FromSeconds(
         outboxOptions.Value.MaxBackoffSeconds
     );
+    private readonly TimeSpan _publishedRetention = TimeSpan.FromHours(
+        outboxOptions.Value.PublishedRetentionHours
+    );
+    private readonly TimeSpan _maintenanceInterval = TimeSpan.FromSeconds(
+        outboxOptions.Value.MaintenanceIntervalSeconds
+    );
+    private DateTimeOffset _nextMaintenanceAt = DateTimeOffset.MinValue;
     private int _consecutiveFailures;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -37,6 +44,8 @@ public sealed class AlertOutboxPublisherWorker(
         {
             try
             {
+                await MaintainOutboxAsync(stoppingToken);
+
                 switch (await PublishOneAsync(stoppingToken))
                 {
                     case PublishOutcome.Empty:
@@ -61,6 +70,34 @@ public sealed class AlertOutboxPublisherWorker(
                 await BackoffAsync(stoppingToken);
             }
         }
+    }
+
+    private async Task MaintainOutboxAsync(CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now < _nextMaintenanceAt)
+            return;
+
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var cutoff = now - _publishedRetention;
+
+        // Never expire pending work. Published rows are delivery history, so keeping a bounded
+        // window preserves recent auditability without growing this hot table forever.
+        var deleted = await db
+            .AlertOutboxMessages.Where(row =>
+                row.PublishedAt != null && row.PublishedAt < cutoff
+            )
+            .ExecuteDeleteAsync(cancellationToken);
+        var pending = await db.AlertOutboxMessages.LongCountAsync(
+            row => row.PublishedAt == null,
+            cancellationToken
+        );
+
+        metrics.SetPendingAlertOutbox(pending);
+        _nextMaintenanceAt = now + _maintenanceInterval;
+
+        if (deleted > 0)
+            logger.LogInformation("Pruned {Count} published alert outbox rows.", deleted);
     }
 
     private async Task<PublishOutcome> PublishOneAsync(CancellationToken cancellationToken)

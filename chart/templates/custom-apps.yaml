@@ -1,100 +1,507 @@
-{{- range $app, $config := dict
-  "diagnostics-worker" (dict "env" (list
-    (dict "name" "ConnectionStrings__DefaultConnection" "value" $.Values.dbConnection)
-    (dict "name" "Kafka__GroupId" "value" "diagnostics-group")
-    (dict "name" "Kafka__EventsTopic" "value" "telemetry-events")
-    (dict "name" "Kafka__AlertsTopic" "value" "telemetry-alerts")
-    (dict "name" "Gemini__ApiKey" "valueFrom" (dict "secretKeyRef" (dict "name" "api-secrets" "key" "gemini")))
-  ))
-  "sensor-emulator" (dict "env" (list
-    (dict "name" "Ingestion__ApiUrl" "value" "http://ingestion-api:8080")
-  ))
-}}
----
-apiVersion: apps/v1
-kind: Deployment
+{{- $edgeName := include "industrial-platform.appName" (dict "root" . "name" "edge-gateway") -}}
+{{- $ingestionName := include "industrial-platform.appName" (dict "root" . "name" "ingestion-api") -}}
+{{- $diagnosticsName := include "industrial-platform.appName" (dict "root" . "name" "diagnostics-worker") -}}
+{{- $sensorName := include "industrial-platform.appName" (dict "root" . "name" "sensor-emulator") -}}
+{{- $webApiName := include "industrial-platform.appName" (dict "root" . "name" "web-api") -}}
+{{- $dashboardName := include "industrial-platform.appName" (dict "root" . "name" "web-dashboard") -}}
+apiVersion: v1
+kind: Service
 metadata:
-  name: {{ $app }}
+  name: {{ $edgeName }}
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "edge-gateway") | nindent 4 }}
 spec:
-  replicas: 1
   selector:
-    matchLabels:
-      app: {{ $app }}
-  template:
-    metadata:
-      labels:
-        app: {{ $app }}
-        sidecar.istio.io/inject: "true"
-    spec:
-      containers:
-      - name: {{ $app }}
-        image: {{ index $.Values.images $app }}
-        ports:
-        - containerPort: {{ $config.port }}
-        env:
-        - name: ASPNETCORE_ENVIRONMENT
-          value: {{ $.Values.env }}
-        - name: Kafka__BootstrapServers
-          value: {{ $.Values.kafkaBrokers }}
-        - name: OTel__ServiceName
-          value: {{ $app }}
-        - name: OTel__Endpoint
-          value: {{ $.Values.otelEndpoint }}
-        {{- toYaml $config.env | nindent 8 }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "edge-gateway") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $app }}
+  name: {{ $edgeName }}-headless
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "edge-gateway") | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "edge-gateway") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $edgeName }}
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "edge-gateway") | nindent 4 }}
+spec:
+  serviceName: {{ $edgeName }}-headless
+  replicas: {{ .Values.edgeGateway.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "edge-gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "edge-gateway") | nindent 8 }}
+      {{- if .Values.istio.sidecarInjection }}
+      annotations:
+        sidecar.istio.io/inject: "true"
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: edge-gateway
+          image: {{ include "industrial-platform.image" (dict "root" . "name" "edge-gateway") | quote }}
+          imagePullPolicy: {{ .Values.platform.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            {{- include "industrial-platform.commonEnv" (dict "root" . "serviceName" "Industrial.Sensor.EdgeGateway") | nindent 12 }}
+            - name: Cloud__ApiUrl
+              value: {{ printf "http://%s:8081" $ingestionName | quote }}
+            - name: Buffer__Path
+              value: /data/edge-buffer.db
+            - name: Buffer__MaxDepth
+              value: {{ .Values.edgeGateway.buffer.maxDepth | quote }}
+            - name: Buffer__SettledIdRetentionHours
+              value: {{ .Values.edgeGateway.buffer.settledIdRetentionHours | quote }}
+            - name: Buffer__QuarantineRetentionHours
+              value: {{ .Values.edgeGateway.buffer.quarantineRetentionHours | quote }}
+            - name: Buffer__QuarantineMaxRows
+              value: {{ .Values.edgeGateway.buffer.quarantineMaxRows | quote }}
+            - name: Uploader__BatchSize
+              value: {{ .Values.edgeGateway.uploader.batchSize | quote }}
+            - name: Uploader__IdleDelayMs
+              value: {{ .Values.edgeGateway.uploader.idleDelayMs | quote }}
+            - name: Uploader__BaseBackoffSeconds
+              value: {{ .Values.edgeGateway.uploader.baseBackoffSeconds | quote }}
+            - name: Uploader__MaxBackoffSeconds
+              value: {{ .Values.edgeGateway.uploader.maxBackoffSeconds | quote }}
+            - name: Uploader__UploadTimeoutSeconds
+              value: {{ .Values.edgeGateway.uploader.uploadTimeoutSeconds | quote }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: buffer-data
+              mountPath: /data
+          {{- with .Values.edgeGateway.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: buffer-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with .Values.edgeGateway.storage.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.edgeGateway.storage.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $ingestionName }}
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "ingestion-api") | nindent 4 }}
 spec:
   selector:
-    app: {{ $app }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "ingestion-api") | nindent 4 }}
   ports:
-    - port: {{ $config.port }}
-      targetPort: {{ $config.port }}
-{{- end }}
-
----
-# WORKERS (No Services required, just Deployments)
-{{- range $app, $config := dict
-  "diagnostics-worker" (dict "env" (list
-    (dict "name" "DB__ConnectionString" "value" $.Values.dbConnection)
-    (dict "name" "Kafka__GroupId" "value" "diagnostics-group")
-    (dict "name" "Kafka__EventsTopic" "value" "telemetry-events")
-    (dict "name" "Kafka__AlertsTopic" "value" "telemetry-alerts")
-    (dict "name" "Gemini__ApiKey" "valueFrom" (dict "secretKeyRef" (dict "name" "api-secrets" "key" "gemini")))
-  ))
-  "sensor-emulator" (dict "env" (list
-    (dict "name" "Ingestion__ApiUrl" "value" "http://ingestion-api:8080")
-  ))
-}}
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 8081
+      targetPort: grpc
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ $app }}
+  name: {{ $ingestionName }}
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "ingestion-api") | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.ingestionApi.replicaCount }}
   selector:
     matchLabels:
-      app: {{ $app }}
+      {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "ingestion-api") | nindent 6 }}
   template:
     metadata:
       labels:
-        app: {{ $app }}
+        {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "ingestion-api") | nindent 8 }}
+      {{- if .Values.istio.sidecarInjection }}
+      annotations:
         sidecar.istio.io/inject: "true"
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ingestion-api
+          image: {{ include "industrial-platform.image" (dict "root" . "name" "ingestion-api") | quote }}
+          imagePullPolicy: {{ .Values.platform.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: grpc
+              containerPort: 8081
+              protocol: TCP
+          env:
+            {{- include "industrial-platform.commonEnv" (dict "root" . "serviceName" "Industrial.Ingestion.Api") | nindent 12 }}
+            - name: Kafka__BootstrapServers
+              value: {{ .Values.platform.kafka.bootstrapServers | quote }}
+            - name: Kafka__EventsTopic
+              value: {{ .Values.platform.kafka.eventsTopic | quote }}
+            - name: Kafka__ReadinessTimeoutSeconds
+              value: {{ .Values.ingestionApi.kafkaReadinessTimeoutSeconds | quote }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- with .Values.ingestionApi.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $diagnosticsName }}
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "diagnostics-worker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.diagnosticsWorker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "diagnostics-worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "diagnostics-worker") | nindent 8 }}
+      {{- if .Values.istio.sidecarInjection }}
+      annotations:
+        sidecar.istio.io/inject: "true"
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: diagnostics-worker
+          image: {{ include "industrial-platform.image" (dict "root" . "name" "diagnostics-worker") | quote }}
+          imagePullPolicy: {{ .Values.platform.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            {{- include "industrial-platform.commonEnv" (dict "root" . "serviceName" "Industrial.Diagnostics.Worker") | nindent 12 }}
+            - name: ConnectionStrings__IndustrialDb
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.platform.applicationSecret.name | quote }}
+                  key: {{ .Values.platform.applicationSecret.postgresConnectionStringKey | quote }}
+            - name: Kafka__BootstrapServers
+              value: {{ .Values.platform.kafka.bootstrapServers | quote }}
+            - name: Kafka__GroupId
+              value: {{ .Values.diagnosticsWorker.kafkaGroupId | quote }}
+            - name: Kafka__EventsTopic
+              value: {{ .Values.platform.kafka.eventsTopic | quote }}
+            - name: Kafka__AlertsTopic
+              value: {{ .Values.platform.kafka.alertsTopic | quote }}
+            - name: Kafka__DeadLetterTopic
+              value: {{ .Values.platform.kafka.deadLetterTopic | quote }}
+            - name: Kafka__ReadinessTimeoutSeconds
+              value: {{ .Values.diagnosticsWorker.kafkaReadinessTimeoutSeconds | quote }}
+            - name: Consumer__BaseBackoffSeconds
+              value: {{ .Values.diagnosticsWorker.consumer.baseBackoffSeconds | quote }}
+            - name: Consumer__MaxBackoffSeconds
+              value: {{ .Values.diagnosticsWorker.consumer.maxBackoffSeconds | quote }}
+            - name: Outbox__IdleDelayMs
+              value: {{ .Values.diagnosticsWorker.outbox.idleDelayMs | quote }}
+            - name: Outbox__BaseBackoffSeconds
+              value: {{ .Values.diagnosticsWorker.outbox.baseBackoffSeconds | quote }}
+            - name: Outbox__MaxBackoffSeconds
+              value: {{ .Values.diagnosticsWorker.outbox.maxBackoffSeconds | quote }}
+            - name: Outbox__PublishedRetentionHours
+              value: {{ .Values.diagnosticsWorker.outbox.publishedRetentionHours | quote }}
+            - name: Outbox__MaintenanceIntervalSeconds
+              value: {{ .Values.diagnosticsWorker.outbox.maintenanceIntervalSeconds | quote }}
+            - name: Gemini__ApiKey
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.platform.applicationSecret.name | quote }}
+                  key: {{ .Values.platform.applicationSecret.geminiApiKeyKey | quote }}
+            - name: Gemini__Model
+              value: {{ .Values.diagnosticsWorker.geminiModel | quote }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- with .Values.diagnosticsWorker.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $sensorName }}
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "sensor-emulator") | nindent 4 }}
+spec:
+  replicas: {{ .Values.sensorEmulator.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "sensor-emulator") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "sensor-emulator") | nindent 8 }}
+      {{- if .Values.istio.sidecarInjection }}
+      annotations:
+        sidecar.istio.io/inject: "true"
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: sensor-emulator
+          image: {{ include "industrial-platform.image" (dict "root" . "name" "sensor-emulator") | quote }}
+          imagePullPolicy: {{ .Values.platform.imagePullPolicy }}
+          env:
+            {{- include "industrial-platform.commonEnv" (dict "root" . "serviceName" "Industrial.Sensor.Emulator") | nindent 12 }}
+            - name: Gateway__Url
+              value: {{ printf "http://%s:8080" $edgeName | quote }}
+            - name: Emulator__DeviceCount
+              value: {{ .Values.sensorEmulator.deviceCount | quote }}
+            - name: Emulator__IntervalSeconds
+              value: {{ .Values.sensorEmulator.intervalSeconds | quote }}
+            - name: Emulator__BufferCapacity
+              value: {{ .Values.sensorEmulator.bufferCapacity | quote }}
+            - name: Emulator__ReplicaId
+              value: {{ .Values.sensorEmulator.replicaId | quote }}
+          {{- with .Values.sensorEmulator.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $webApiName }}
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "web-api") | nindent 4 }}
+spec:
+  selector:
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "web-api") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $webApiName }}
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "web-api") | nindent 4 }}
+spec:
+  replicas: {{ .Values.webApi.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "web-api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "web-api") | nindent 8 }}
+      {{- if .Values.istio.sidecarInjection }}
+      annotations:
+        sidecar.istio.io/inject: "true"
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: web-api
+          image: {{ include "industrial-platform.image" (dict "root" . "name" "web-api") | quote }}
+          imagePullPolicy: {{ .Values.platform.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            {{- include "industrial-platform.commonEnv" (dict "root" . "serviceName" "Industrial.Web.Api") | nindent 12 }}
+            - name: Kafka__BootstrapServers
+              value: {{ .Values.platform.kafka.bootstrapServers | quote }}
+            - name: Kafka__GroupId
+              value: {{ .Values.webApi.kafkaGroupId | quote }}
+            - name: Kafka__EventsTopic
+              value: {{ .Values.platform.kafka.eventsTopic | quote }}
+            - name: Kafka__AlertsTopic
+              value: {{ .Values.platform.kafka.alertsTopic | quote }}
+            - name: Kafka__ReadinessTimeoutSeconds
+              value: {{ .Values.webApi.kafkaReadinessTimeoutSeconds | quote }}
+            - name: CORS__AllowedOrigins
+              value: {{ .Values.webApi.corsAllowedOrigins | quote }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          {{- with .Values.webApi.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $dashboardName }}
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "web-dashboard") | nindent 4 }}
+spec:
+  selector:
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "web-dashboard") | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $dashboardName }}
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
+    {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "web-dashboard") | nindent 4 }}
+spec:
+  replicas: {{ .Values.webDashboard.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "web-dashboard") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "industrial-platform.selectorLabels" (dict "root" . "component" "web-dashboard") | nindent 8 }}
+      {{- if .Values.istio.sidecarInjection }}
+      annotations:
+        sidecar.istio.io/inject: "true"
+      {{- end }}
     spec:
       containers:
-      - name: {{ $app }}
-        image: {{ index $.Values.images $app }}
-        env:
-        - name: ASPNETCORE_ENVIRONMENT
-          value: {{ $.Values.env }}
-        - name: Kafka__BootstrapServers
-          value: {{ $.Values.kafkaBrokers }}
-        - name: OTel__ServiceName
-          value: {{ $app }}
-        - name: OTel__Endpoint
-          value: {{ $.Values.otelEndpoint }}
-        {{- toYaml $config.env | nindent 8 }}
-{{- end }}
+        - name: web-dashboard
+          image: {{ include "industrial-platform.image" (dict "root" . "name" "web-dashboard") | quote }}
+          imagePullPolicy: {{ .Values.platform.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          {{- with .Values.webDashboard.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

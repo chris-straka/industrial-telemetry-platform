@@ -4,6 +4,7 @@ using Industrial.Sensor.EdgeGateway.Features.Buffer;
 using Industrial.Sensor.EdgeGateway.Features.Upload;
 using Industrial.Sensor.EdgeGateway.Infrastructure;
 using Industrial.Shared;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
@@ -71,6 +72,8 @@ builder.Services.AddDbContext<EdgeDbContext>(
 builder.Services.AddSingleton<BufferDepth>();
 builder.Services.AddSingleton<BufferMutationGate>();
 builder.Services.AddSingleton<EdgeMetrics>();
+builder.Services.AddHealthChecks().AddCheck<EdgeReadinessCheck>("sqlite_write");
+builder.Services.AddScoped<BufferSettlementStore>();
 
 // OTel
 builder
@@ -113,23 +116,9 @@ using (var scope = app.Services.CreateScope())
     // If the schema changes, we drain it then migrate
     await db.Database.EnsureCreatedAsync();
 
-    // EnsureCreated does not add a newly introduced table to an existing database. Completion
-    // markers are a backwards-compatible buffer enhancement, so create that one table explicitly
-    // rather than requiring an operator to discard already-buffered telemetry during an upgrade.
-    await db.Database.ExecuteSqlRawAsync(
-        """
-        CREATE TABLE IF NOT EXISTS "SettledMessages" (
-            "MessageId" TEXT NOT NULL CONSTRAINT "PK_SettledMessages" PRIMARY KEY,
-            "SettledAt" TEXT NOT NULL
-        );
-        """
-    );
-    await db.Database.ExecuteSqlRawAsync(
-        """
-        CREATE INDEX IF NOT EXISTS "IX_SettledMessages_SettledAt"
-        ON "SettledMessages" ("SettledAt");
-        """
-    );
+    // EnsureCreated does not add newly introduced tables to an existing database. These compatible
+    // additions preserve already-buffered telemetry across an application upgrade.
+    await EdgeDatabaseInitializer.EnsureCompatibleSchemaAsync(db, buffer);
 
     // WAL will write to a log file first and fold changes into the DB later in a CP
     // Allows the uploader read and the receiver to write simultaneously
@@ -149,5 +138,7 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.MapReceiverEndpoints();
+app.MapGet("/health", () => Results.Ok());
+app.MapHealthChecks("/health/ready", new HealthCheckOptions());
 
 app.Run();

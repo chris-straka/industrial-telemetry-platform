@@ -29,12 +29,19 @@ services:
       - Kafka__GroupId=web-api-dashboard-group
       - Kafka__EventsTopic=telemetry-events
       - Kafka__AlertsTopic=telemetry-alerts
+      - Kafka__ReadinessTimeoutSeconds=3
       - OTel__ServiceName=Industrial.Web.Api
       - OTel__Endpoint=http://otel-collector:4317
       - CORS__AllowedOrigins=http://localhost:3001,http://localhost:5173
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
   ingestion-api:
     image: ingestion-api
@@ -51,11 +58,18 @@ services:
       - ASPNETCORE_ENVIRONMENT=Development
       - Kafka__BootstrapServers=kafka:9092
       - Kafka__EventsTopic=telemetry-events
+      - Kafka__ReadinessTimeoutSeconds=3
       - OTel__ServiceName=Industrial.Ingestion.Api
       - OTel__Endpoint=http://otel-collector:4317
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
   # Sits between sensors and cloud
   #
@@ -80,6 +94,8 @@ services:
       - Buffer__Path=/data/edge-buffer.db
       - Buffer__MaxDepth=500000
       - Buffer__SettledIdRetentionHours=24
+      - Buffer__QuarantineRetentionHours=168
+      - Buffer__QuarantineMaxRows=10000
       - Uploader__BatchSize=200
       - Uploader__IdleDelayMs=500
       - Uploader__BaseBackoffSeconds=1
@@ -88,9 +104,10 @@ services:
       - OTel__ServiceName=Industrial.Sensor.EdgeGateway
       - OTel__Endpoint=http://otel-collector:4317
     # no depends_on because gateway is meant to work without the cloud
-    # /health is a constant, so an unreachable cloud never makes this container unhealthy
+    # Readiness proves the local durable queue is writable. Cloud reachability deliberately does
+    # not affect it: accepting locally while the cloud is down is the gateway's purpose.
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health/ready"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -109,12 +126,16 @@ services:
       - Outbox__IdleDelayMs=500
       - Outbox__BaseBackoffSeconds=1
       - Outbox__MaxBackoffSeconds=30
+      - Outbox__PublishedRetentionHours=168
+      - Outbox__MaintenanceIntervalSeconds=30
       - Gemini__ApiKey=${GEMINI_API_KEY}
       - Gemini__Model=gemini-flash-lite-latest
       - Kafka__BootstrapServers=kafka:9092
       - Kafka__GroupId=diagnostics-group
       - Kafka__EventsTopic=telemetry-events
       - Kafka__AlertsTopic=telemetry-alerts
+      - Kafka__DeadLetterTopic=telemetry-events-dlq
+      - Kafka__ReadinessTimeoutSeconds=3
       - OTel__ServiceName=Industrial.Diagnostics.Worker
       - OTel__Endpoint=http://otel-collector:4317
     depends_on:
@@ -122,6 +143,12 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   sensor-emulator:
     image: sensor-emulator
@@ -138,7 +165,7 @@ services:
       - OTel__Endpoint=http://otel-collector:4317
     depends_on:
       edge-gateway:
-        condition: service_started
+        condition: service_healthy
 
   sensor-emulator-2:
     image: sensor-emulator
@@ -156,7 +183,7 @@ services:
       - OTel__Endpoint=http://otel-collector:4317
     depends_on:
       edge-gateway:
-        condition: service_started
+        condition: service_healthy
 
   sensor-emulator-3:
     image: sensor-emulator
@@ -174,7 +201,7 @@ services:
       - OTel__Endpoint=http://otel-collector:4317
     depends_on:
       edge-gateway:
-        condition: service_started
+        condition: service_healthy
 
   postgres:
     image: postgres:18
@@ -205,54 +232,68 @@ services:
       postgres:
         condition: service_healthy
 
-  kafka:
-    image: public.ecr.aws/bitnami/kafka:4.2.0
-    # Linux/amd64 runs hot on my mac m4 mini
-    # platform: linux/amd64
-    environment:
-      # Unique ID for this Kafka server
-      - KAFKA_CFG_NODE_ID=0
-      # Manage the cluster (controller) and store the data (broker)
-      - KAFKA_CFG_PROCESS_ROLES=controller,broker
-      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
-      # INTERNAL (for apps), EXTERNAL (for my Mac), CONTROLLER for Kafka management
-      # 0.0.0.0 means "listen on all network interfaces"
-      - KAFKA_CFG_LISTENERS=INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
-      # Tell my apps what host/port to use when talking to Kafka (prevents localhost loop inside Docker)
-      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://localhost:9094
-      # PLAINTEXT security protocol for everything
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
-      # Tell Kafka to use the 'INTERNAL' listener for internal broker traffic
-      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
-      # Kafka expects a 22-character base64 UUID, not an arbitrary display name. Keeping it
-      # fixed lets the broker reopen the metadata stored on the named volume after a restart.
-      - KAFKA_KRAFT_CLUSTER_ID=abcdefghijklmnopqrstuv
-      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=false
-      - BITNAMI_DEBUG=false
+  kafka-storage-init:
+    image: alpine:3.23
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 1000:1000 /data"]
     volumes:
-      - kafka_data:/bitnami/kafka
+      - kafka_data:/data
+
+  kafka:
+    # Apache's official image is multi-architecture, so Apple silicon runs natively instead of
+    # emulating Bitnami's amd64-only public image.
+    image: apache/kafka:4.2.0
+    hostname: kafka
+    environment:
+      KAFKA_NODE_ID: 0
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # INTERNAL is advertised to Compose services; EXTERNAL is advertised to host tools.
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # Kafka's own Docker examples use this base64 UUID form for a stable KRaft cluster ID.
+      CLUSTER_ID: abcdefghijklmnopqrstuv
+      # Keep the previous Bitnami volume layout (`data/`) so changing images does not discard
+      # an existing local broker log.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+    volumes:
+      - kafka_data:/var/lib/kafka
+    depends_on:
+      kafka-storage-init:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:9094:9094" # Map external port (for Kafka UI tools on Mac)
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "kafka-topics.sh --bootstrap-server localhost:9092 --list",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list",
         ]
       interval: 10s
       timeout: 10s
       retries: 10
 
   kafka-init:
-    image: public.ecr.aws/bitnami/kafka:4.2.0
+    image: apache/kafka:4.2.0
     depends_on:
       kafka:
         condition: service_healthy
     entrypoint: ["/bin/bash", "-ec"]
     command:
       - |
-        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-events --partitions 6 --replication-factor 1
-        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-alerts --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-events --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-alerts --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-events-dlq --partitions 6 --replication-factor 1
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest

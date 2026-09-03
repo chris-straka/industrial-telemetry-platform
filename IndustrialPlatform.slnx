@@ -12,5 +12,6 @@
         <Project Path="tests/Industrial.Diagnostics.Tests/Industrial.Diagnostics.Tests.csproj" />
         <Project Path="tests/Industrial.EdgeGateway.Tests/Industrial.EdgeGateway.Tests.csproj" />
         <Project Path="tests/Industrial.Ingestion.Tests/Industrial.Ingestion.Tests.csproj" />
+        <Project Path="tests/Industrial.Web.Tests/Industrial.Web.Tests.csproj" />
     </Folder>
 </Solution>

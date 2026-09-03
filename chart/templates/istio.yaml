@@ -1,49 +1,47 @@
-apiVersion: networking.istio.io/v1alpha3
+{{- if .Values.istio.enabled }}
+{{- $webApiName := include "industrial-platform.appName" (dict "root" . "name" "web-api") -}}
+{{- $dashboardName := include "industrial-platform.appName" (dict "root" . "name" "web-dashboard") -}}
+apiVersion: networking.istio.io/v1beta1
 kind: Gateway
 metadata:
-    name: platform-gateway
+  name: {{ include "industrial-platform.fullname" . }}
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
 spec:
-    selector:
-        istio: ingressgateway # Maps to Istio's default ingress
-    servers:
-        - port:
-              number: 80
-              name: http
-              protocol: HTTP
-          hosts:
-              - "*"
+  selector:
+    {{- toYaml .Values.istio.gatewaySelector | nindent 4 }}
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        {{- toYaml .Values.istio.hosts | nindent 8 }}
 ---
-apiVersion: networking.istio.io/v1alpha3
+apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
-    name: platform-routing
+  name: {{ include "industrial-platform.fullname" . }}
+  labels:
+    {{- include "industrial-platform.labels" . | nindent 4 }}
 spec:
-    hosts:
-        - "*"
-    gateways:
-        - platform-gateway
-    http:
-        # Route Web API traffic
-        - match:
-              - uri:
-                    prefix: /telemetryHub
-          route:
-              - destination:
-                    host: web-api
-                    port:
-                        number: 8080
-        # Route Ingestion API traffic
-        - match:
-              - uri:
-                    prefix: /api/telemetry
-          route:
-              - destination:
-                    host: ingestion-api
-                    port:
-                        number: 8080
-        # Route everything else to the Dashboard (Frontend)
-        - route:
-              - destination:
-                    host: web-dashboard
-                    port:
-                        number: 80
+  hosts:
+    {{- toYaml .Values.istio.hosts | nindent 4 }}
+  gateways:
+    - {{ include "industrial-platform.fullname" . }}
+  http:
+    # The dashboard uses same-origin SignalR, including WebSocket upgrade requests.
+    - match:
+        - uri:
+            prefix: /telemetryHub
+      route:
+        - destination:
+            host: {{ $webApiName }}
+            port:
+              number: 8080
+    - route:
+        - destination:
+            host: {{ $dashboardName }}
+            port:
+              number: 80
+{{- end }}

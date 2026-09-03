@@ -23,17 +23,22 @@ public sealed class ModelEngineTests
             return Task.FromResult<IReadOnlyList<float>>([70, 71, 69]);
         }
 
-        await engine.InspectAsync("EQ-A", 92, LoadA, CancellationToken.None);
-        await engine.InspectAsync("EQ-A", 93, LoadA, CancellationToken.None);
+        var firstA = await engine.InspectAsync("EQ-A", 92, LoadA, CancellationToken.None);
+        var secondA = await engine.InspectAsync("EQ-A", 93, LoadA, CancellationToken.None);
         await engine.InspectAsync("EQ-B", 72, LoadB, CancellationToken.None);
 
         Assert.Equal(1, aLoads);
         Assert.Equal(1, bLoads);
+        Assert.Equal(3, firstA.HistoryCount);
+        Assert.Equal(4, secondA.HistoryCount);
+        Assert.Equal(64, firstA.DetectorVersion.Length);
+        Assert.Equal(engine.DetectorVersion, firstA.DetectorVersion);
 
         engine.Invalidate("EQ-A");
-        await engine.InspectAsync("EQ-A", 94, LoadA, CancellationToken.None);
+        var rebuiltA = await engine.InspectAsync("EQ-A", 94, LoadA, CancellationToken.None);
 
         Assert.Equal(2, aLoads);
         Assert.Equal(1, bLoads);
+        Assert.Equal(3, rebuiltA.HistoryCount);
     }
 }

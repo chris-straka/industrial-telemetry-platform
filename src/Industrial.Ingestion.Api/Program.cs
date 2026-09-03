@@ -2,7 +2,11 @@ using Confluent.Kafka;
 using FluentValidation;
 using Industrial.Ingestion.Api.Configuration;
 using Industrial.Ingestion.Api.Features.Ingestion;
+using Industrial.Ingestion.Api.Infrastructure;
 using Industrial.Shared;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Options;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -101,6 +105,26 @@ builder.Services.AddSingleton(sp => // service provider
         .Build();
 });
 
+builder.Services.AddSingleton<IAdminClient>(sp =>
+{
+    var options = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
+    return new AdminClientBuilder(
+        new AdminClientConfig
+        {
+            BootstrapServers = options.BootstrapServers,
+            AllowAutoCreateTopics = false,
+        }
+    ).Build();
+});
+builder
+    .Services.AddHealthChecks()
+    .AddCheck<KafkaTopicHealthCheck>(
+        "kafka-events-topic",
+        failureStatus: HealthStatus.Unhealthy,
+        tags: ["ready"],
+        timeout: TimeSpan.FromSeconds(KafkaOptions.MaximumReadinessTimeoutSeconds + 1)
+    );
+
 builder.Services.AddGrpc();
 builder.Services.AddOpenApi();
 var app = builder.Build();
@@ -113,5 +137,12 @@ if (app.Environment.IsDevelopment())
 
 app.MapGrpcService<TelemetryService>();
 app.MapGet("/health", () => Results.Ok());
+app.MapHealthChecks(
+    "/health/ready",
+    new HealthCheckOptions
+    {
+        Predicate = registration => registration.Tags.Contains("ready"),
+    }
+);
 
 app.Run();

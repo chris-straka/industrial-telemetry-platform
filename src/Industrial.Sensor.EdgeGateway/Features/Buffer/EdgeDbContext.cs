@@ -23,6 +23,8 @@ public class EdgeDbContext(DbContextOptions<EdgeDbContext> options) : DbContext(
     // DBSet = table
     public DbSet<TelemetryRecord> TelemetryRecords => Set<TelemetryRecord>();
     public DbSet<SettledMessage> SettledMessages => Set<SettledMessage>();
+    public DbSet<QuarantinedTelemetryRecord> QuarantinedTelemetryRecords =>
+        Set<QuarantinedTelemetryRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -34,5 +36,13 @@ public class EdgeDbContext(DbContextOptions<EdgeDbContext> options) : DbContext(
         var settled = modelBuilder.Entity<SettledMessage>();
         settled.HasKey(r => r.MessageId);
         settled.HasIndex(r => r.SettledAt);
+
+        var quarantine = modelBuilder.Entity<QuarantinedTelemetryRecord>();
+        quarantine.HasKey(r => r.MessageId);
+        quarantine.Property(r => r.EquipmentId).HasMaxLength(64);
+        quarantine.Property(r => r.TraceParent).HasMaxLength(128);
+        quarantine.Property(r => r.RejectionCode).HasMaxLength(64);
+        quarantine.Property(r => r.RejectionReason).HasMaxLength(512);
+        quarantine.HasIndex(r => r.RejectedAt);
     }
 }

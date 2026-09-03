@@ -4,7 +4,9 @@ using Confluent.Kafka;
 using Industrial.Shared;
 using Industrial.Web.Api.Configuration;
 using Industrial.Web.Api.Infrastructure;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
@@ -68,6 +70,28 @@ builder
     );
 
 builder.Services.AddSingleton<WebMetrics>();
+builder.Services.AddSingleton<KafkaConsumerReadiness>();
+builder.Services.AddSingleton<IAdminClient>(
+    new AdminClientBuilder(
+        new AdminClientConfig
+        {
+            BootstrapServers = kafka.BootstrapServers,
+            AllowAutoCreateTopics = false,
+        }
+    ).Build()
+);
+builder
+    .Services.AddHealthChecks()
+    .AddCheck<KafkaConsumerReadiness>(
+        "kafka-consumer",
+        tags: ["ready"]
+    )
+    .AddCheck<KafkaTopicsHealthCheck>(
+        "kafka-topics",
+        failureStatus: HealthStatus.Unhealthy,
+        tags: ["ready"],
+        timeout: TimeSpan.FromSeconds(KafkaOptions.MaximumReadinessTimeoutSeconds + 1)
+    );
 builder.Services.AddSignalR();
 builder.Services.AddCors(options =>
 {
@@ -85,6 +109,13 @@ var app = builder.Build();
 app.UseCors();
 app.MapHub<TelemetryHub>("/telemetryHub");
 app.MapGet("/health", () => Results.Ok());
+app.MapHealthChecks(
+    "/health/ready",
+    new HealthCheckOptions
+    {
+        Predicate = registration => registration.Tags.Contains("ready"),
+    }
+);
 
 app.Run();
 
@@ -100,6 +131,7 @@ public class TelemetryHub : Hub<ITelemetryClient> { }
 public class KafkaSignalRWorker(
     IOptions<KafkaOptions> kafkaOptions,
     IHubContext<TelemetryHub, ITelemetryClient> hubContext,
+    KafkaConsumerReadiness readiness,
     WebMetrics metrics,
     ILogger<KafkaSignalRWorker> logger
 ) : BackgroundService
@@ -121,7 +153,17 @@ public class KafkaSignalRWorker(
             AllowAutoCreateTopics = false,
         };
 
-        using var consumer = new ConsumerBuilder<string, string>(config).Build();
+        using var consumer = new ConsumerBuilder<string, string>(config)
+            .SetPartitionsAssignedHandler((_, partitions) =>
+                readiness.PartitionsAssigned(partitions.Count)
+            )
+            .SetPartitionsRevokedHandler((_, _) => readiness.PartitionsRevoked())
+            .SetPartitionsLostHandler((_, _) => readiness.PartitionsLost())
+            .SetErrorHandler((_, error) =>
+            {
+                logger.LogError("Kafka consumer error: {Reason}", error.Reason);
+            })
+            .Build();
         consumer.Subscribe([kafka.EventsTopic, kafka.AlertsTopic]);
 
         logger.LogInformation("SignalR-Kafka Bridge Started. Listening for events...");
@@ -181,6 +223,7 @@ public class KafkaSignalRWorker(
         }
         finally
         {
+            readiness.PartitionsRevoked();
             // Leaves the consumer group cleanly, so a deploy does not wait out
             // session.timeout.ms before the replacement is assigned partitions.
             consumer.Close();

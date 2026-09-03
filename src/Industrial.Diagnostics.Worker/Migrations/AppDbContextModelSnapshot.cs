@@ -73,6 +73,19 @@ namespace Industrial.Diagnostics.Worker.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<int?>("DetectorHistoryCount")
+                        .HasColumnType("integer");
+
+                    b.Property<double?>("DetectorPValue")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("DetectorScore")
+                        .HasColumnType("double precision");
+
+                    b.Property<string>("DetectorVersion")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<double>("EngineTemperature")
                         .HasColumnType("double precision");
 

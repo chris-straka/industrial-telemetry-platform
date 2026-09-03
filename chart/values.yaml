@@ -1,12 +1,193 @@
-env: Development
-otelEndpoint: http://platform-otel-collector:4317
-kafkaBrokers: industrial-platform-kafka:9092
-dbConnection: Host=industrial-platform-postgresql;Database=industrial_db;Username=postgres;Password=password
-geminiApiKey: "your-dev-key"
+# This chart is a renderable deployment prototype, not a production claim. Secrets, image
+# publishing, TLS/mTLS, storage classes, and the external OTLP collector remain operator concerns.
+
+nameOverride: ""
+fullnameOverride: ""
+
+platform:
+  environment: Production
+  imagePullPolicy: IfNotPresent
+
+  # The chart does not install an OpenTelemetry Collector. Point this at a collector that accepts
+  # OTLP/gRPC logs, metrics, and traces before deploying. Export failures do not stop the apps.
+  otelEndpoint: http://otel-collector.observability.svc.cluster.local:4317
+
+  kafka:
+    # The dependency's fullnameOverride below makes this DNS name deterministic.
+    bootstrapServers: industrial-platform-kafka:9092
+    eventsTopic: &eventsTopic telemetry-events
+    alertsTopic: &alertsTopic telemetry-alerts
+    deadLetterTopic: &deadLetterTopic telemetry-events-dlq
+
+  # This Secret is never created with literal values by the chart. Either provision it yourself
+  # or enable externalSecret below. It must contain all three named keys. The connection string
+  # should resemble:
+  # Host=industrial-platform-postgresql;Port=5432;Database=industrial_db;Username=industrial;Password=<secret>
+  applicationSecret:
+    name: industrial-platform-secrets
+    geminiApiKeyKey: gemini-api-key
+    postgresConnectionStringKey: postgres-connection-string
+    postgresPasswordKey: postgres-password
 
 images:
-    web-api: web-api:latest
-    ingestion-api: ingestion-api:latest
-    diagnostics-worker: diagnostics-worker:latest
-    sensor-emulator: sensor-emulator:latest
-    web-dashboard: web-dashboard:latest
+  edge-gateway: edge-gateway:latest
+  ingestion-api: ingestion-api:latest
+  diagnostics-worker: diagnostics-worker:latest
+  sensor-emulator: sensor-emulator:latest
+  web-api: web-api:latest
+  web-dashboard: web-dashboard:latest
+
+edgeGateway:
+  replicaCount: 1
+  storage:
+    size: 2Gi
+    storageClass: ""
+  buffer:
+    maxDepth: 500000
+    settledIdRetentionHours: 24
+    quarantineRetentionHours: 168
+    quarantineMaxRows: 10000
+  uploader:
+    batchSize: 200
+    idleDelayMs: 500
+    baseBackoffSeconds: 1
+    maxBackoffSeconds: 30
+    uploadTimeoutSeconds: 30
+  resources: {}
+
+ingestionApi:
+  replicaCount: 1
+  kafkaReadinessTimeoutSeconds: 3
+  resources: {}
+
+diagnosticsWorker:
+  replicaCount: 1
+  kafkaGroupId: diagnostics-group
+  kafkaReadinessTimeoutSeconds: 3
+  geminiModel: gemini-flash-lite-latest
+  consumer:
+    baseBackoffSeconds: 1
+    maxBackoffSeconds: 30
+  outbox:
+    idleDelayMs: 500
+    baseBackoffSeconds: 1
+    maxBackoffSeconds: 30
+    publishedRetentionHours: 168
+    maintenanceIntervalSeconds: 30
+  resources: {}
+
+sensorEmulator:
+  # ReplicaId owns a distinct equipment-number range. Keep replicaCount at one; add separately
+  # configured releases (with different replicaId values) when demonstrating a larger fleet.
+  replicaCount: 1
+  replicaId: 0
+  deviceCount: 4
+  intervalSeconds: 2
+  bufferCapacity: 10000
+  resources: {}
+
+webApi:
+  replicaCount: 1
+  kafkaGroupId: web-api-dashboard-group
+  kafkaReadinessTimeoutSeconds: 3
+  # Set this to the exact public dashboard origin. Multiple origins are comma-separated.
+  corsAllowedOrigins: http://localhost
+  resources: {}
+
+webDashboard:
+  replicaCount: 1
+  resources: {}
+
+externalSecret:
+  enabled: false
+  apiVersion: external-secrets.io/v1beta1
+  refreshInterval: 1h
+  secretStoreRef:
+    name: aws-secretsmanager
+    kind: ClusterSecretStore
+  # When enabled, set each remote key. `property` is optional for a scalar remote secret.
+  remoteRefs:
+    geminiApiKey:
+      key: ""
+      property: ""
+    postgresConnectionString:
+      key: ""
+      property: ""
+    postgresPassword:
+      key: ""
+      property: ""
+
+istio:
+  enabled: false
+  sidecarInjection: false
+  gatewaySelector:
+    istio: ingressgateway
+  hosts:
+    - "*"
+
+# Dependency configuration. PostgreSQL reads its password from the same pre-provisioned Secret as
+# the diagnostics worker; no database or Gemini credentials are committed in this values file.
+postgresql:
+  enabled: true
+  fullnameOverride: industrial-platform-postgresql
+  auth:
+    enablePostgresUser: false
+    username: industrial
+    database: industrial_db
+    existingSecret: industrial-platform-secrets
+    secretKeys:
+      userPasswordKey: postgres-password
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
+
+# Applications currently support only Kafka's PLAINTEXT client protocol. Internal broker traffic
+# keeps the dependency defaults; adding application SASL/TLS configuration is separate hardening.
+kafka:
+  enabled: true
+  fullnameOverride: industrial-platform-kafka
+  listeners:
+    client:
+      protocol: PLAINTEXT
+  controller:
+    replicaCount: 1
+    controllerOnly: false
+    persistence:
+      enabled: true
+      size: 8Gi
+  broker:
+    replicaCount: 0
+  extraConfig: |
+    auto.create.topics.enable=false
+    offsets.topic.replication.factor=1
+    transaction.state.log.min.isr=1
+    transaction.state.log.replication.factor=1
+  provisioning:
+    enabled: true
+    # Keep this as a normal Job. A post-install hook can deadlock `helm --wait`, because the
+    # application readiness checks require these topics before Helm would run the hook.
+    useHelmHooks: false
+    numPartitions: 6
+    replicationFactor: 1
+    topics:
+      - name: *eventsTopic
+        partitions: 6
+        replicationFactor: 1
+      - name: *alertsTopic
+        partitions: 6
+        replicationFactor: 1
+      - name: *deadLetterTopic
+        partitions: 6
+        replicationFactor: 1
+
+# These backends are retained as optional dependencies, but disabled by default because an OTLP
+# Collector and persistent-storage/retention choices have not yet been designed for this chart.
+kube-prometheus-stack:
+  enabled: false
+
+tempo:
+  enabled: false
+
+loki:
+  enabled: false

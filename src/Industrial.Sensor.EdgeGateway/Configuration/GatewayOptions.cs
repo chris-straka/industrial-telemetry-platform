@@ -26,6 +26,13 @@ public class BufferOptions
     // keeping this transient edge database bounded.
     [Range(1, 8_760)]
     public int SettledIdRetentionHours { get; set; }
+
+    // Rejected payloads are forensic evidence, not an unbounded second queue.
+    [Range(1, 8_760)]
+    public int QuarantineRetentionHours { get; set; }
+
+    [Range(1, 1_000_000)]
+    public int QuarantineMaxRows { get; set; }
 }
 
 public class UploaderOptions

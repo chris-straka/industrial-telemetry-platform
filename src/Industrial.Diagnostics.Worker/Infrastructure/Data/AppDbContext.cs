@@ -11,6 +11,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<TelemetryReading>().Property(x => x.DetectorVersion).HasMaxLength(64);
+
         var outbox = modelBuilder.Entity<AlertOutboxMessage>();
         outbox.Property(x => x.EquipmentId).HasMaxLength(64);
         outbox.Property(x => x.TraceParent).HasMaxLength(128);

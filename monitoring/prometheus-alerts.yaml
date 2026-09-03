@@ -1,0 +1,256 @@
+groups:
+    - name: industrial-platform-telemetry-loss
+      rules:
+          - alert: SensorAcquisitionBufferDroppingReadings
+            expr: sum(increase(sensor_telemetry_dropped_total[10m])) > 0
+            for: 5m
+            labels:
+                severity: warning
+                component: sensor-emulator
+            annotations:
+                summary: Sensor acquisition is dropping readings
+                description: >-
+                    The bounded in-memory acquisition channel dropped readings during the last
+                    10 minutes. This is intentional best-effort behavior, but it is permanent
+                    pre-gateway loss and should be investigated if sustained.
+
+          - alert: SensorDeliveryPolicyDroppingReadings
+            expr: sum(increase(sensor_telemetry_delivery_dropped_total[10m])) > 0
+            for: 5m
+            labels:
+                severity: warning
+                component: sensor-emulator
+            annotations:
+                summary: Sensor delivery policies are expiring
+                description: >-
+                    Dequeued sensor readings exhausted their bounded HTTP delivery policy without
+                    receiving a gateway 202. These readings are permanently lost by design.
+
+          - alert: EdgeAdmissionCapacityExceeded
+            expr: sum(increase(edge_telemetry_shed_total[5m])) > 0
+            labels:
+                severity: critical
+                component: edge-gateway
+            annotations:
+                summary: Edge gateways are shedding new readings
+                description: >-
+                    A gateway reached its durable buffer ceiling and returned 429. Sensor retries
+                    are bounded, so continued shedding can become permanent sensor-side loss.
+
+          - alert: EdgePermanentCloudRejections
+            expr: sum(increase(edge_telemetry_rejected_total[10m])) > 0
+            labels:
+                severity: warning
+                component: edge-gateway
+            annotations:
+                summary: Cloud permanently rejected edge readings
+                description: >-
+                    Ingestion explicitly rejected one or more durable gateway rows. The gateway
+                    removed them from the live queue and retained their payloads in quarantine
+                    for investigation.
+
+          - alert: EdgeMalformedTrafficHigh
+            expr: sum(rate(edge_telemetry_malformed_total[10m])) > 0.1
+            for: 10m
+            labels:
+                severity: warning
+                component: edge-gateway
+            annotations:
+                summary: Edge gateways are receiving sustained malformed traffic
+                description: >-
+                    More than one invalid reading every ten seconds has been rejected at the edge
+                    for ten minutes. Check sensor firmware, clock, identity, and schema bounds.
+
+    - name: industrial-platform-edge-delivery
+      rules:
+          - alert: EdgeCloudUnreachable
+            expr: min(edge_cloud_reachable) == 0
+            for: 2m
+            labels:
+                severity: warning
+                component: edge-gateway
+            annotations:
+                summary: An edge gateway cannot reach ingestion
+                description: >-
+                    At least one gateway's latest upload attempt could not reach the cloud. The
+                    durable SQLite queue should absorb the outage, but queue age must be watched.
+
+          - alert: EdgeQueueStale
+            expr: max(edge_oldest_message_age_seconds) > 300
+            for: 5m
+            labels:
+                severity: warning
+                component: edge-gateway
+            annotations:
+                summary: Edge queue has readings older than five minutes
+                description: >-
+                    The oldest unacknowledged reading has remained over five minutes old. Delivery
+                    is behind even if the latest connectivity probe currently succeeds.
+
+          - alert: EdgeQueueCriticallyStale
+            expr: max(edge_oldest_message_age_seconds) > 1800
+            for: 5m
+            labels:
+                severity: critical
+                component: edge-gateway
+            annotations:
+                summary: Edge queue has readings older than thirty minutes
+                description: >-
+                    The durable edge queue is severely delayed. Restore ingestion before the
+                    configured buffer ceiling causes gateway admission to shed new readings.
+
+          - alert: EdgeQueueGrowingDuringCloudOutage
+            expr: max(deriv(edge_queue_depth[10m])) > 0 and min(edge_cloud_reachable) == 0
+            for: 5m
+            labels:
+                severity: warning
+                component: edge-gateway
+            annotations:
+                summary: Edge backlog is growing while ingestion is unreachable
+                description: >-
+                    Queue depth has a positive ten-minute slope while a gateway reports the cloud
+                    unreachable. Capacity exhaustion risk is increasing.
+
+          - alert: EdgeUploadFailuresSustained
+            expr: sum(rate(edge_upload_failures_total[5m])) > 0.05
+            for: 10m
+            labels:
+                severity: warning
+                component: edge-gateway
+            annotations:
+                summary: Edge uploads are failing continuously
+                description: >-
+                    Upload attempts have failed at more than one every twenty seconds for ten
+                    minutes. Inspect the outcome label and correlated traces.
+
+    - name: industrial-platform-ingestion
+      rules:
+          - alert: IngestionServerErrors
+            expr: >-
+                sum(rate(http_server_request_duration_seconds_count{
+                  job="Industrial.Ingestion.Api",
+                  http_response_status_code=~"5.."
+                }[5m])) > 0
+            for: 5m
+            labels:
+                severity: critical
+                component: ingestion-api
+            annotations:
+                summary: Ingestion API is returning server errors
+                description: >-
+                    The ingestion API has returned HTTP 5xx responses continuously for five
+                    minutes. Gateway rows remain durable unless ingestion explicitly names them
+                    accepted or rejected.
+
+          - alert: IngestionHighServerErrorRatio
+            expr: >-
+                (
+                  sum(rate(http_server_request_duration_seconds_count{
+                    job="Industrial.Ingestion.Api",
+                    http_response_status_code=~"5.."
+                  }[10m]))
+                  /
+                  clamp_min(sum(rate(http_server_request_duration_seconds_count{
+                    job="Industrial.Ingestion.Api"
+                  }[10m])), 0.001)
+                ) > 0.05
+            for: 10m
+            labels:
+                severity: critical
+                component: ingestion-api
+            annotations:
+                summary: Ingestion API error ratio exceeds five percent
+                description: >-
+                    More than five percent of measured ingestion HTTP requests have returned a
+                    server error over the last ten minutes.
+
+    - name: industrial-platform-diagnostics
+      rules:
+          - alert: DiagnosticsProcessingRetriesSustained
+            expr: sum(rate(worker_telemetry_processing_failures_total[5m])) > 0.05
+            for: 10m
+            labels:
+                severity: warning
+                component: diagnostics-worker
+            annotations:
+                summary: Diagnostics processing is repeatedly rewinding Kafka records
+                description: >-
+                    Failed records are being sought and retried at more than one attempt every
+                    twenty seconds. Postgres, model, or transaction failures may be blocking a
+                    partition.
+
+          - alert: DiagnosticsDeadLetterCreated
+            expr: sum(increase(worker_telemetry_dead_letter_published_total[10m])) > 0
+            labels:
+                severity: warning
+                component: diagnostics-worker
+            annotations:
+                summary: Diagnostics moved poison records to the dead-letter topic
+                description: >-
+                    Malformed or otherwise deterministic poison records were durably published to
+                    the diagnostics DLQ before their source offsets were committed. Inspect and
+                    resolve the DLQ payloads.
+
+          - alert: DiagnosticsDeadLetterPublishFailing
+            expr: sum(increase(worker_telemetry_dead_letter_failures_total[5m])) > 0
+            labels:
+                severity: critical
+                component: diagnostics-worker
+            annotations:
+                summary: Diagnostics cannot publish a poison record to the DLQ
+                description: >-
+                    A dead-letter write failed or had an ambiguous acknowledgement. The source
+                    offset remains uncommitted, so its Kafka partition may be unable to advance.
+
+          - alert: DiagnosticsTelemetryLagHigh
+            expr: >-
+                histogram_quantile(0.95,
+                  sum by (le) (rate(worker_telemetry_lag_seconds_bucket[10m]))
+                ) > 300
+            for: 10m
+            labels:
+                severity: warning
+                component: diagnostics-worker
+            annotations:
+                summary: Diagnostics persistence lag p95 exceeds five minutes
+                description: >-
+                    At least five percent of persisted readings are arriving more than five
+                    minutes after acquisition. Check edge backlog, Kafka lag, and Postgres health.
+
+    - name: industrial-platform-alert-outbox
+      rules:
+          - alert: AlertOutboxBacklogged
+            expr: max(worker_alert_outbox_pending) > 0
+            for: 10m
+            labels:
+                severity: warning
+                component: diagnostics-worker
+            annotations:
+                summary: Alert outbox has remained non-empty
+                description: >-
+                    One or more anomaly alerts have remained unpublished for ten minutes. The
+                    durable Postgres outbox prevents loss, but live dashboard delivery is delayed.
+
+          - alert: AlertOutboxBacklogCritical
+            expr: max(worker_alert_outbox_pending) >= 100
+            for: 5m
+            labels:
+                severity: critical
+                component: diagnostics-worker
+            annotations:
+                summary: Alert outbox contains at least one hundred pending alerts
+                description: >-
+                    Alert publication is substantially behind. Restore the alert Kafka topic and
+                    verify the outbox publisher before the backlog continues to grow.
+
+          - alert: AlertOutboxPublishFailures
+            expr: sum(increase(worker_alert_failures_total[5m])) > 0
+            for: 5m
+            labels:
+                severity: warning
+                component: diagnostics-worker
+            annotations:
+                summary: Alert outbox publication is failing
+                description: >-
+                    Kafka has not durably acknowledged one or more alert publication attempts.
+                    Rows remain pending and will be retried.

@@ -11,6 +11,7 @@ public sealed class WorkerMetrics : IDisposable
 
     private readonly Meter _meter;
     private readonly Counter<long> _duplicates;
+    private long _pendingAlertOutbox;
 
     public WorkerMetrics()
     {
@@ -34,10 +35,16 @@ public sealed class WorkerMetrics : IDisposable
             description: "Processing attempts that failed and were rewound for retry."
         );
 
-        Discarded = _meter.CreateCounter<long>(
-            "worker.telemetry.discarded",
+        DeadLettersPublished = _meter.CreateCounter<long>(
+            "worker.telemetry.dead_letter_published",
             unit: "{message}",
-            description: "Kafka messages dropped because they carried no usable MessageId."
+            description: "Poison Kafka records durably acknowledged by the dead-letter topic."
+        );
+
+        DeadLetterFailures = _meter.CreateCounter<long>(
+            "worker.telemetry.dead_letter_failures",
+            unit: "{attempt}",
+            description: "Dead-letter writes that failed or had an ambiguous Kafka result."
         );
 
         Anomalies = _meter.CreateCounter<long>(
@@ -64,6 +71,13 @@ public sealed class WorkerMetrics : IDisposable
             description: "Outbox alerts acknowledged by Kafka and marked published in Postgres."
         );
 
+        _meter.CreateObservableGauge(
+            "worker.alert.outbox.pending",
+            () => Interlocked.Read(ref _pendingAlertOutbox),
+            unit: "{alert}",
+            description: "Current unpublished alert rows in the shared Postgres outbox."
+        );
+
         _duplicates = _meter.CreateCounter<long>(
             "worker.telemetry.duplicate",
             unit: "{reading}",
@@ -81,7 +95,8 @@ public sealed class WorkerMetrics : IDisposable
     public Counter<long> Persisted { get; }
     public Counter<long> Consumed { get; }
     public Counter<long> ProcessingFailures { get; }
-    public Counter<long> Discarded { get; }
+    public Counter<long> DeadLettersPublished { get; }
+    public Counter<long> DeadLetterFailures { get; }
     public Counter<long> Anomalies { get; }
     public Counter<long> AiFailures { get; }
     public Counter<long> AlertFailures { get; }
@@ -91,6 +106,9 @@ public sealed class WorkerMetrics : IDisposable
     // A method rather than a public counter, so every sample carries the tag
     public void RecordDuplicate(string detectedBy) =>
         _duplicates.Add(1, new KeyValuePair<string, object?>("detected_by", detectedBy));
+
+    public void SetPendingAlertOutbox(long count) =>
+        Interlocked.Exchange(ref _pendingAlertOutbox, count);
 
     public void Dispose() => _meter.Dispose();
 }

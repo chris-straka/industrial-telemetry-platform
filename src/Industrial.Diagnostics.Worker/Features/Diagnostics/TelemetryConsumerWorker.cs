@@ -20,6 +20,8 @@ public class TelemetryConsumerWorker(
     IOptions<KafkaOptions> kafkaOptions,
     IOptions<GeminiOptions> geminiOptions,
     IOptions<ConsumerOptions> consumerOptions,
+    IDeadLetterPublisher deadLetterPublisher,
+    DiagnosticsConsumerReadiness readiness,
     ModelEngine modelEngine,
     WorkerMetrics metrics,
     Client gemini
@@ -46,11 +48,17 @@ public class TelemetryConsumerWorker(
             MetadataMaxAgeMs = 5000,
             AllowAutoCreateTopics = false,
             // A record becomes durable in Kafka's consumer-group state only after its Postgres
-            // transaction succeeds (or after the poison policy explicitly discards it).
+            // transaction succeeds (or after Kafka persists a poison copy in the DLQ).
             EnableAutoCommit = false,
         };
 
-        using var consumer = new ConsumerBuilder<Ignore, string>(config).Build();
+        using var consumer = new ConsumerBuilder<string, string>(config)
+            .SetPartitionsAssignedHandler((_, partitions) =>
+                readiness.PartitionsAssigned(partitions.Count)
+            )
+            .SetPartitionsRevokedHandler((_, _) => readiness.PartitionsRevoked())
+            .SetPartitionsLostHandler((_, _) => readiness.PartitionsRevoked())
+            .Build();
         consumer.Subscribe(kafkaConfig.EventsTopic);
 
         logger.LogInformation(
@@ -64,7 +72,7 @@ public class TelemetryConsumerWorker(
             while (!stoppingToken.IsCancellationRequested)
             {
                 Activity? activity = null;
-                ConsumeResult<Ignore, string>? consumeResult = null;
+                ConsumeResult<string, string>? consumeResult = null;
 
                 try
                 {
@@ -76,12 +84,18 @@ public class TelemetryConsumerWorker(
 
                     if (consumeResult.Message?.Value is null)
                     {
+                        const string reason = "Kafka record is a tombstone";
+                        await deadLetterPublisher.PublishAsync(
+                            consumeResult,
+                            reason,
+                            stoppingToken
+                        );
                         logger.LogWarning(
-                            "Discarding Kafka tombstone at {TopicPartitionOffset}.",
+                            "Quarantined Kafka tombstone at {TopicPartitionOffset}.",
                             consumeResult.TopicPartitionOffset
                         );
-                        metrics.Discarded.Add(1);
                         consumer.Commit(consumeResult);
+                        _consecutiveFailures = 0;
                         continue;
                     }
 
@@ -101,13 +115,18 @@ public class TelemetryConsumerWorker(
 
                     if (!TryValidate(data, out var messageId, out var validationError))
                     {
+                        await deadLetterPublisher.PublishAsync(
+                            consumeResult,
+                            validationError,
+                            stoppingToken
+                        );
                         logger.LogWarning(
-                            "Discarding poison message at {TopicPartitionOffset}: {Reason}",
+                            "Quarantined poison message at {TopicPartitionOffset}: {Reason}",
                             consumeResult.TopicPartitionOffset,
                             validationError
                         );
-                        metrics.Discarded.Add(1);
                         consumer.Commit(consumeResult);
+                        _consecutiveFailures = 0;
                         continue;
                     }
 
@@ -171,6 +190,7 @@ public class TelemetryConsumerWorker(
         }
         finally
         {
+            readiness.PartitionsRevoked();
             consumer.Close();
         }
     }
@@ -281,6 +301,10 @@ public class TelemetryConsumerWorker(
                 EngineTemperature = data.EngineTemperature,
                 OilPressure = data.OilPressure,
                 IsAnomaly = result.IsAnomaly,
+                DetectorScore = result.Score,
+                DetectorPValue = result.PValue,
+                DetectorHistoryCount = result.HistoryCount,
+                DetectorVersion = result.DetectorVersion,
             };
 
             db.TelemetryReadings.Add(reading);

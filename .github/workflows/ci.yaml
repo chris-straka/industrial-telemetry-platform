@@ -55,3 +55,24 @@ jobs:
         run: docker compose config --quiet
         env:
           GEMINI_API_KEY: ci-config-validation-only
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Build and lint Helm chart
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm dependency build chart
+          helm lint chart
+
+      - name: Render default and optional Helm resources
+        run: |
+          helm template industrial-platform chart --namespace industrial-platform --output-dir "$RUNNER_TEMP/helm-default"
+          helm lint chart \
+            --set externalSecret.enabled=true \
+            --set externalSecret.remoteRefs.geminiApiKey.key=ci/gemini \
+            --set externalSecret.remoteRefs.postgresConnectionString.key=ci/postgres-connection \
+            --set externalSecret.remoteRefs.postgresPassword.key=ci/postgres-password \
+            --set istio.enabled=true

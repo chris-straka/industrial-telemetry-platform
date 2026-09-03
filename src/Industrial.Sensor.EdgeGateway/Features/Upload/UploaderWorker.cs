@@ -27,8 +27,6 @@ public class UploaderWorker(
     IServiceScopeFactory scopeFactory,
     EdgeMetrics metrics,
     BufferDepth bufferDepth,
-    BufferMutationGate mutationGate,
-    IOptions<BufferOptions> bufferOptions,
     IOptions<UploaderOptions> uploaderOptions,
     ILogger<UploaderWorker> logger
 ) : BackgroundService
@@ -60,10 +58,6 @@ public class UploaderWorker(
         uploaderOptions.Value.UploadTimeoutSeconds
     );
 
-    private readonly TimeSpan _settledIdRetention = TimeSpan.FromHours(
-        bufferOptions.Value.SettledIdRetentionHours
-    );
-
     // Failures since the last accepted batch (resets to 0)
     private int _consecutiveFailures;
 
@@ -87,6 +81,8 @@ public class UploaderWorker(
                 // We're in a BackgroundService (process liftime) so we need scoped deps
                 using var scope = scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<EdgeDbContext>();
+                var settlementStore =
+                    scope.ServiceProvider.GetRequiredService<BufferSettlementStore>();
                 // Type created by grpc_csharp_plugin (with .proto's service)
                 var grpcClient =
                     scope.ServiceProvider.GetRequiredService<TelemetryIngestion.TelemetryIngestionClient>();
@@ -136,41 +132,11 @@ public class UploaderWorker(
                     .Select(p => p.Record)
                     .ToList();
 
-                await mutationGate.EnterAsync(stoppingToken);
-                try
-                {
-                    // The marker insert and queue delete are one transaction. The receiver holds
-                    // the same gate while checking both tables, so a delayed sensor retry cannot
-                    // resurrect a MessageId in the gap between these two durable state changes.
-                    await using var transaction = await db.Database.BeginTransactionAsync(
-                        stoppingToken
-                    );
-
-                    var settledAt = DateTimeOffset.UtcNow;
-                    db.SettledMessages.AddRange(
-                        settledRows.Select(row => new SettledMessage
-                        {
-                            MessageId = row.MessageId,
-                            SettledAt = settledAt,
-                        })
-                    );
-                    db.TelemetryRecords.RemoveRange(settledRows);
-                    await db.SaveChangesAsync(stoppingToken);
-
-                    // Retention bounds the idempotency ledger. This indexed delete is cheap when
-                    // nothing has expired and shares the current transaction when rows have.
-                    var cutoff = settledAt - _settledIdRetention;
-                    await db
-                        .SettledMessages.Where(row => row.SettledAt < cutoff)
-                        .ExecuteDeleteAsync(stoppingToken);
-
-                    await transaction.CommitAsync(stoppingToken);
-                    bufferDepth.Release(settledRows.Count);
-                }
-                finally
-                {
-                    mutationGate.Exit();
-                }
+                await settlementStore.SettleAsync(
+                    settledRows,
+                    result.RejectedIds,
+                    stoppingToken
+                );
 
                 metrics.Uploaded.Add(result.AcceptedIds.Count);
                 metrics.Rejected.Add(result.RejectedIds.Count);
@@ -180,9 +146,9 @@ public class UploaderWorker(
 
                 if (result.RejectedIds.Count > 0)
                 {
-                    // Only the cloud knows WHY, so this says which and leaves the reason to its logs
                     logger.LogError(
-                        "Cloud rejected {Count} readings as unacceptable. Dropping {MessageIds}.",
+                        "Cloud permanently rejected {Count} readings. Quarantined {MessageIds} "
+                            + "with a generic reason because the response has no per-reading cause.",
                         result.RejectedIds.Count,
                         string.Join(", ", result.RejectedIds)
                     );

@@ -1,0 +1,2 @@
+# `helm dependency build` recreates these archives from Chart.lock.
+charts/

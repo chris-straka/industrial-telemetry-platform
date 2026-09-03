@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using Microsoft.ML;
 using Microsoft.ML.Data;
 using Microsoft.ML.Transforms.TimeSeries;
@@ -18,7 +19,13 @@ public class AnomalyPrediction
     public double[] Prediction { get; set; } = default!;
 }
 
-public record MachineHealthResult(bool IsAnomaly, double Score, double PValue);
+public record MachineHealthResult(
+    bool IsAnomaly,
+    double Score,
+    double PValue,
+    int HistoryCount,
+    string DetectorVersion
+);
 
 /// <summary>
 /// Owns one online IID detector state per equipment identity.
@@ -43,8 +50,13 @@ public sealed class ModelEngine : IDisposable
 
     public ModelEngine(string modelPath)
     {
+        DetectorVersion = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(modelPath)))
+            .ToLowerInvariant();
         _model = _mlContext.Model.Load(modelPath, out _);
     }
+
+    /// <summary>SHA-256 of the exact detector artifact loaded by this process.</summary>
+    public string DetectorVersion { get; }
 
     public async Task<MachineHealthResult> InspectAsync(
         string equipmentId,
@@ -66,14 +78,19 @@ public sealed class ModelEngine : IDisposable
         lock (state.Gate)
         {
             state.LastUsed = Environment.TickCount64;
+            var historyCount = state.ObservationCount;
             var prediction = state.Engine.Predict(
                 new TelemetryData { EngineTemperature = temperature }
             );
+            if (state.ObservationCount < HistoryLength)
+                state.ObservationCount++;
 
             return new MachineHealthResult(
                 prediction.Prediction[0] == 1,
                 prediction.Prediction[1],
-                prediction.Prediction[2]
+                prediction.Prediction[2],
+                historyCount,
+                DetectorVersion
             );
         }
     }
@@ -89,7 +106,7 @@ public sealed class ModelEngine : IDisposable
         foreach (var temperature in history)
             engine.Predict(new TelemetryData { EngineTemperature = temperature });
 
-        return new EngineState(engine);
+        return new EngineState(engine, Math.Min(history.Count, HistoryLength));
     }
 
     private void TrimCacheIfNeeded(string currentEquipmentId)
@@ -108,11 +125,13 @@ public sealed class ModelEngine : IDisposable
     public void Dispose() => _engines.Clear();
 
     private sealed class EngineState(
-        TimeSeriesPredictionEngine<TelemetryData, AnomalyPrediction> engine
+        TimeSeriesPredictionEngine<TelemetryData, AnomalyPrediction> engine,
+        int observationCount
     )
     {
         public object Gate { get; } = new();
         public TimeSeriesPredictionEngine<TelemetryData, AnomalyPrediction> Engine { get; } = engine;
+        public int ObservationCount = observationCount;
         public long LastUsed = Environment.TickCount64;
     }
 }

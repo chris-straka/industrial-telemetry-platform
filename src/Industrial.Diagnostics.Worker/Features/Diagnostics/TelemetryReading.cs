@@ -22,4 +22,11 @@ public class TelemetryReading
     public double EngineTemperature { get; set; }
     public double OilPressure { get; set; }
     public bool IsAnomaly { get; set; }
+
+    // Nullable only for rows created before the audit migration. Every new decision records all
+    // four values so it can be explained without reconstructing ephemeral process state.
+    public double? DetectorScore { get; set; }
+    public double? DetectorPValue { get; set; }
+    public int? DetectorHistoryCount { get; set; }
+    public string? DetectorVersion { get; set; }
 }

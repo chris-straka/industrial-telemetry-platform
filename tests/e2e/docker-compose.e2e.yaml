@@ -1,0 +1,49 @@
+services:
+  ingestion-api:
+    # E2E images use separate tags so this harness cannot replace the images used by the normal
+    # development Compose project.
+    image: industrialplatform-e2e-ingestion-api
+    ports: !reset []
+    environment:
+      Kafka__ReadinessTimeoutSeconds: "3"
+
+  edge-gateway:
+    image: industrialplatform-e2e-edge-gateway
+    ports: !reset []
+    environment:
+      Buffer__QuarantineRetentionHours: "168"
+      Buffer__QuarantineMaxRows: "10000"
+      Uploader__IdleDelayMs: "100"
+      Uploader__BaseBackoffSeconds: "1"
+      Uploader__MaxBackoffSeconds: "2"
+      Uploader__UploadTimeoutSeconds: "3"
+
+  diagnostics-worker:
+    image: industrialplatform-e2e-diagnostics-worker
+    environment:
+      # The test uses ordinary readings and never relies on a remote AI response. A non-empty
+      # value is still required by startup validation.
+      Gemini__ApiKey: e2e-not-a-real-key
+      Kafka__DeadLetterTopic: telemetry-events-dlq
+      Kafka__ReadinessTimeoutSeconds: "3"
+      Consumer__BaseBackoffSeconds: "1"
+      Consumer__MaxBackoffSeconds: "2"
+      Outbox__IdleDelayMs: "100"
+      Outbox__BaseBackoffSeconds: "1"
+      Outbox__MaxBackoffSeconds: "2"
+      Outbox__PublishedRetentionHours: "168"
+      Outbox__MaintenanceIntervalSeconds: "5"
+
+  postgres:
+    ports: !reset []
+
+  kafka:
+    ports: !reset []
+
+  kafka-init:
+    # Keep this self-contained even if the main Compose file has not yet added the DLQ topic.
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-events --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-alerts --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-events-dlq --partitions 6 --replication-factor 1

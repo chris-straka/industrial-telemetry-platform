@@ -171,6 +171,49 @@ public static class ReceiveTelemetryEndpoint
                 // This is an anonymous type specifying a response body
                 Results.Ok(new { queueDepth = await db.TelemetryRecords.CountAsync() })
         );
+
+        // A bounded forensic view of permanent cloud rejections. Limit is deliberately capped so
+        // an operator cannot make one request materialize the entire quarantine in memory.
+        app.MapGet(
+            "/buffer/quarantine",
+            async (int? limit, EdgeDbContext db, CancellationToken cancellationToken) =>
+            {
+                var take = Math.Clamp(limit ?? 100, 1, 200);
+                var total = await db.QuarantinedTelemetryRecords.CountAsync(cancellationToken);
+                // SQLite's EF provider cannot translate DateTimeOffset ordering. Keep the limit
+                // parameterized in raw SQL, then shape at most 200 rows in memory.
+                var rows = await db
+                    .QuarantinedTelemetryRecords.FromSqlInterpolated(
+                        $"""
+                        SELECT *
+                        FROM "QuarantinedTelemetryRecords"
+                        ORDER BY "RejectedAt" DESC, "MessageId" DESC
+                        LIMIT {take}
+                        """
+                    )
+                    .AsNoTracking()
+                    .ToListAsync(cancellationToken);
+                var items = rows
+                    .Select(row => new
+                    {
+                        row.MessageId,
+                        row.OriginalQueueId,
+                        row.EquipmentId,
+                        row.SequenceNumber,
+                        row.OccurredAt,
+                        row.BufferedAt,
+                        row.TraceParent,
+                        row.EngineTemperature,
+                        row.OilPressure,
+                        row.RejectedAt,
+                        row.RejectionCode,
+                        row.RejectionReason,
+                    })
+                    .ToList();
+
+                return Results.Ok(new { total, limit = take, items });
+            }
+        );
     }
 
     // SQLite reports every constraint failure as error code 19 (SQLITE_CONSTRAINT)
