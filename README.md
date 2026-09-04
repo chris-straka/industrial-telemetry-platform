@@ -144,8 +144,10 @@ ingestion requires the client certificate, validates its client-auth purpose and
 checks its SHA-256 fingerprint against an allowlist. Identities survive ordinary restarts, while
 `docker compose down -v` intentionally destroys and regenerates this local PKI.
 
-This mTLS protection covers only edge-to-ingestion gRPC. Sensor-to-edge, Kafka, Postgres, and
-observability traffic remain plaintext and unauthenticated inside the Compose network. See
+Sensor-to-edge traffic uses mutual TLS with per-device certificates, and the Kafka and
+Postgres listeners terminate server-side TLS verified against the development CA. Kafka has no
+client authentication yet, Postgres still permits plaintext for host tooling, and observability
+traffic remains plaintext and unauthenticated inside the Compose network. See
 [Security](docs/Security.md) for the exact boundary and remaining work.
 
 # Install

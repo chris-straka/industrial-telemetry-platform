@@ -6,9 +6,9 @@ hop. It does not make the whole local platform a zero-trust deployment.
 | hop or surface | Compose protection | current limitation |
 | --- | --- | --- |
 | edge gateway -> ingestion gRPC | TLS plus required client certificate | development PKI; one simulated gateway identity |
-| sensor -> edge receiver | loopback-published host port, plain HTTP inside Compose | no sensor authentication or transport encryption |
-| applications -> Kafka | private Compose network | plaintext, unauthenticated Kafka protocol |
-| diagnostics -> Postgres | password from local Compose configuration | plaintext connection and development credential |
+| sensor -> edge receiver | mutual TLS, one client certificate per simulated device bound to its equipment ID | development PKI; 12 simulated device identities |
+| applications -> Kafka | server-side TLS, clients verify the broker against the dev CA | no client authentication (no mTLS/SASL); development PKI |
+| diagnostics -> Postgres | server-side TLS, worker connects with VerifyFull against the dev CA | plaintext still permitted by pg_hba for host EF tooling; development credential |
 | applications -> OTel collector/backends | private Compose network | plaintext, unauthenticated OTLP/backend traffic |
 | dashboard/operator tools | host ports bound to `127.0.0.1` | local-only exposure is not application authentication |
 
@@ -17,13 +17,20 @@ would overstate what this repository proves.
 
 # Development PKI flow
 
-`dev-pki-init` runs `scripts/create-dev-pki.sh` before the edge and ingestion services start. It
-creates three separately mounted named volumes:
+`dev-pki-init` runs `scripts/create-dev-pki.sh` before the edge, ingestion, Postgres,
+and Kafka services start. It creates separately mounted named volumes:
 
 - an authority volume containing the private development CA;
 - an ingestion volume containing the server PFX, public CA certificate, and allowed client
-  fingerprints; and
-- an edge volume containing the gateway client PFX and public CA certificate.
+  fingerprints;
+- an edge volume containing the gateway client PFX, gateway server PFX, and public CA
+  certificate;
+- a sensor volume containing one client PFX per simulated device plus the public CA
+  certificate;
+- a Kafka volume containing the broker server PKCS12, public CA certificate, and JVM client
+  properties; and
+- a Postgres volume containing the database server certificate and private key in PEM form,
+  mounted only into the database container.
 
 The CA private key is never mounted into an application container. Each application sees only its
 own leaf private key. Valid identities remain stable across normal Compose stops and restarts;
@@ -69,6 +76,7 @@ cluster.
 # Production work still required
 
 A production design still needs a managed issuer and enrollment flow, renewal before expiry,
-auditable per-device revocation, workload identity for cloud services, Kafka and Postgres
-encryption/authentication, protected telemetry backends and operator UIs, and secret rotation that
-does not require values in Terraform state. Those tasks remain in `TODO.md`.
+auditable per-device revocation, workload identity for cloud services, Kafka client
+authentication, Postgres plaintext prohibition plus workload-specific credentials, protected
+telemetry backends and operator UIs, and secret rotation that does not require values in
+Terraform state. Those tasks remain in `TODO.md`.

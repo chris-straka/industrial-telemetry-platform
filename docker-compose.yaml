@@ -15,6 +15,7 @@ services:
       - edge_gateway_tls_data:/edge
       - sensor_tls_data:/sensors
       - kafka_tls_data:/kafka
+      - postgres_tls_data:/postgres
 
   web-dashboard:
     image: node:24-alpine
@@ -168,7 +169,10 @@ services:
       dockerfile: src/Industrial.Diagnostics.Worker/Dockerfile
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - ConnectionStrings__IndustrialDb=Host=postgres;Database=industrial_db;Username=admin;Password=password
+      # VerifyFull against the dev CA the worker already mounts for Kafka. Plaintext
+      # stays possible at the server (pg_hba is unchanged) so host EF tooling keeps
+      # working; the worker itself never connects without verification.
+      - ConnectionStrings__IndustrialDb=Host=postgres;Database=industrial_db;Username=admin;Password=password;SSL Mode=VerifyFull;Root Certificate=/kafka-tls/ca.crt
       - Consumer__BaseBackoffSeconds=1
       - Consumer__MaxBackoffSeconds=30
       - Outbox__IdleDelayMs=500
@@ -271,12 +275,32 @@ services:
     image: postgres:18
     volumes:
       - postgres_data:/var/lib/postgresql
+      - postgres_tls_data:/postgres-tls:ro
+    # The server key must be 0600 and owned by postgres, but the PKI volume is
+    # root-owned and read-only. Copy it into PGDATA on every start (so rotation
+    # applies on restart) before the stock entrypoint runs initdb/startup.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p "$$PGDATA" && \
+        cp /postgres-tls/server.crt "$$PGDATA/server.crt" && \
+        cp /postgres-tls/server.key "$$PGDATA/server.key" && \
+        chmod 0600 "$$PGDATA/server.key" && \
+        chown postgres:postgres "$$PGDATA/server.crt" "$$PGDATA/server.key" && \
+        exec docker-entrypoint.sh postgres \
+          -c ssl=on \
+          -c ssl_cert_file="$$PGDATA/server.crt" \
+          -c ssl_key_file="$$PGDATA/server.key"
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: password
       POSTGRES_DB: industrial_db
     ports:
       - "127.0.0.1:5432:5432"
+    depends_on:
+      dev-pki-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d industrial_db"]
       interval: 5s
@@ -547,6 +571,7 @@ volumes:
   alertmanager_data:
   sensor_tls_data:
   kafka_tls_data:
+  postgres_tls_data:
   dev_pki_authority_data:
   ingestion_tls_data:
   edge_gateway_tls_data:

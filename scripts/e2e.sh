@@ -221,6 +221,15 @@ query_db() {
         | tr -d '[:space:]'
 }
 
+postgres_ssl_enabled() {
+    [ "$(query_db 'SHOW ssl;' 2>/dev/null || true)" = 'on' ]
+}
+
+diagnostics_connects_with_tls() {
+    count="$(query_db 'SELECT count(*) FROM pg_stat_ssl WHERE ssl;' 2>/dev/null || true)"
+    [ -n "$count" ] && [ "$count" -ge 1 ]
+}
+
 database_has_unique_ids() {
     expected_count=$1
     id_list=$2
@@ -312,6 +321,7 @@ fi
 log 'Starting Postgres and Kafka'
 compose up --detach postgres kafka-init
 wait_for_container_health postgres "$STARTUP_TIMEOUT"
+wait_until 'Postgres TLS listener' "$STARTUP_TIMEOUT" postgres_ssl_enabled
 wait_for_container_health kafka "$STARTUP_TIMEOUT"
 # kafka-init has no healthcheck; its successful one-shot state is exited with status zero.
 wait_until 'Kafka topic initialization' "$STARTUP_TIMEOUT" kafka_init_succeeded
@@ -382,6 +392,10 @@ wait_for_http_from_edge 'ingestion readiness after restart' \
 wait_until 'edge queue to drain' 60 edge_queue_is 0
 wait_until 'three unique telemetry rows in Postgres' 60 \
     database_has_unique_ids 3 "$READING_IDS_SQL"
+# The e2e psql probes use the container's Unix socket (never an SSL row), so a
+# true row here must be the worker's VerifyFull TCP connection.
+wait_until 'diagnostics worker TLS connection to Postgres' 30 \
+    diagnostics_connects_with_tls
 
 log 'Stopping Postgres and proving Diagnostics rewinds the consumed record'
 POSTGRES_OUTAGE_STARTED="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"

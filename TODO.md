@@ -33,8 +33,13 @@ Remaining work:
 - Kafka client listeners now terminate TLS: the broker presents a dev-CA server
   certificate, .NET clients verify it via SslCaLocation, JVM tools use a keytool-built
   truststore, and kafka-ui connects over SSL. Still open: client-certificate auth
-  (SASL or mTLS) instead of server-only TLS, plus Postgres TLS and workload-specific
-  credentials;
+  (SASL or mTLS) instead of server-only TLS;
+- Postgres now terminates TLS: the server presents a dev-CA PEM identity (SAN
+  `postgres`/`localhost`) and the diagnostics worker connects with
+  `SSL Mode=VerifyFull` against the CA it already mounts for Kafka. The server key
+  stays in a volume mounted only into the database container. Still open: forbid
+  plaintext in pg_hba (host EF tooling currently still uses it) plus
+  workload-specific credentials;
 - protect observability ingestion and operator UIs;
 - replace the development CA bootstrap with managed enrollment, renewal, rotation, revocation, and
   audit; and

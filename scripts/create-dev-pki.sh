@@ -9,11 +9,12 @@ SENSOR_TLS_DIR=${SENSOR_TLS_DIR:-/sensors}
 # Three emulator replicas of four devices each: EQ-0 through EQ-11.
 SENSOR_DEVICE_COUNT=${SENSOR_DEVICE_COUNT:-12}
 KAFKA_TLS_DIR=${KAFKA_TLS_DIR:-/kafka}
+POSTGRES_TLS_DIR=${POSTGRES_TLS_DIR:-/postgres}
 # Development-only keystore password, same class of placeholder as the Compose
 # Postgres password. Production uses a managed secret, never a baked-in literal.
 KAFKA_TLS_PASSWORD=${KAFKA_TLS_PASSWORD:-changeit}
 
-mkdir -p "$AUTHORITY_DIR" "$INGESTION_TLS_DIR" "$EDGE_TLS_DIR" "$SENSOR_TLS_DIR" "$KAFKA_TLS_DIR"
+mkdir -p "$AUTHORITY_DIR" "$INGESTION_TLS_DIR" "$EDGE_TLS_DIR" "$SENSOR_TLS_DIR" "$KAFKA_TLS_DIR" "$POSTGRES_TLS_DIR"
 umask 077
 
 if ! openssl x509 -in "$AUTHORITY_DIR/ca.crt" -checkend 604800 -noout >/dev/null 2>&1 \
@@ -138,6 +139,46 @@ mv "$EDGE_TLS_DIR/ca.crt.tmp" "$EDGE_TLS_DIR/ca.crt"
 cp "$AUTHORITY_DIR/ca.crt" "$SENSOR_TLS_DIR/ca.crt.tmp"
 mv "$SENSOR_TLS_DIR/ca.crt.tmp" "$SENSOR_TLS_DIR/ca.crt"
 
+# Postgres terminates TLS with a PEM server identity (SAN: postgres for the Compose
+# network, localhost for host tools). PEM, not PKCS12: the postgres server reads
+# plain cert/key files, and the key stays in this volume, which is mounted only
+# into the database container. Npgsql clients verify it against the shared dev CA
+# they already mount for Kafka.
+pem_is_current() {
+    pem_check_path=$1
+    pem_check_purpose=$2
+
+    openssl x509 -in "$pem_check_path" -checkend 604800 -noout >/dev/null 2>&1 \
+        && openssl verify -CAfile "$AUTHORITY_DIR/ca.crt" \
+            -purpose "$pem_check_purpose" "$pem_check_path" >/dev/null 2>&1
+}
+
+if ! pem_is_current "$POSTGRES_TLS_DIR/server.crt" sslserver; then
+    openssl genrsa -out "$work_dir/postgres-server.key" 3072
+    openssl req -new -sha256 \
+        -key "$work_dir/postgres-server.key" \
+        -subj '/CN=postgres' \
+        -out "$work_dir/postgres-server.csr"
+    {
+        printf '%s\n' 'basicConstraints=critical,CA:FALSE'
+        printf '%s\n' 'keyUsage=critical,digitalSignature,keyEncipherment'
+        printf '%s\n' 'extendedKeyUsage=serverAuth'
+        printf '%s\n' 'subjectAltName=DNS:postgres,DNS:localhost'
+    } > "$work_dir/postgres-server.ext"
+    openssl x509 -req -sha256 \
+        -in "$work_dir/postgres-server.csr" \
+        -CA "$AUTHORITY_DIR/ca.crt" \
+        -CAkey "$AUTHORITY_DIR/ca.key" \
+        -CAcreateserial \
+        -days 825 \
+        -extfile "$work_dir/postgres-server.ext" \
+        -out "$work_dir/postgres-server.crt"
+    cp "$work_dir/postgres-server.key" "$POSTGRES_TLS_DIR/server.key.tmp"
+    mv "$POSTGRES_TLS_DIR/server.key.tmp" "$POSTGRES_TLS_DIR/server.key"
+    cp "$work_dir/postgres-server.crt" "$POSTGRES_TLS_DIR/server.crt.tmp"
+    mv "$POSTGRES_TLS_DIR/server.crt.tmp" "$POSTGRES_TLS_DIR/server.crt"
+fi
+
 # Kafka brokers terminate client TLS. One server identity (SAN: kafka for the Compose
 # network, localhost for host tools) plus a CA-only truststore and a static client
 # properties file for the JVM tools (kafka-topics, console producer/consumer).
@@ -196,4 +237,6 @@ chmod 0444 \
     "$SENSOR_TLS_DIR"/device-EQ-*.pfx \
     "$KAFKA_TLS_DIR/kafka-server.p12" \
     "$KAFKA_TLS_DIR/ca.crt" \
-    "$KAFKA_TLS_DIR/client.properties"
+    "$KAFKA_TLS_DIR/client.properties" \
+    "$POSTGRES_TLS_DIR/server.crt"
+chmod 0400 "$POSTGRES_TLS_DIR/server.key"
