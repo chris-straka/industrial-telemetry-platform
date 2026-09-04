@@ -75,6 +75,7 @@ var transportSecurity =
 var sensorSecurity =
     builder.Configuration.GetSection(SensorSecurityOptions.Section)
         .Get<SensorSecurityOptions>() ?? new SensorSecurityOptions();
+
 builder.AddSensorSecurity(sensorSecurity);
 #endregion
 

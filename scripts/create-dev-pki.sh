@@ -5,8 +5,11 @@ set -eu
 AUTHORITY_DIR=${AUTHORITY_DIR:-/authority}
 INGESTION_TLS_DIR=${INGESTION_TLS_DIR:-/ingestion}
 EDGE_TLS_DIR=${EDGE_TLS_DIR:-/edge}
+SENSOR_TLS_DIR=${SENSOR_TLS_DIR:-/sensors}
+# Three emulator replicas of four devices each: EQ-0 through EQ-11.
+SENSOR_DEVICE_COUNT=${SENSOR_DEVICE_COUNT:-12}
 
-mkdir -p "$AUTHORITY_DIR" "$INGESTION_TLS_DIR" "$EDGE_TLS_DIR"
+mkdir -p "$AUTHORITY_DIR" "$INGESTION_TLS_DIR" "$EDGE_TLS_DIR" "$SENSOR_TLS_DIR"
 umask 077
 
 if ! openssl x509 -in "$AUTHORITY_DIR/ca.crt" -checkend 604800 -noout >/dev/null 2>&1 \
@@ -97,10 +100,38 @@ if ! pfx_is_current "$EDGE_TLS_DIR/client.pfx" sslclient; then
         client.pfx
 fi
 
+if ! pfx_is_current "$EDGE_TLS_DIR/server.pfx" sslserver; then
+    issue_certificate \
+        edge-gateway-server \
+        edge-gateway \
+        serverAuth \
+        'DNS:edge-gateway,DNS:localhost' \
+        "$EDGE_TLS_DIR" \
+        server.pfx
+fi
+
+# One client identity per simulated device (CN=EQ-N). Each emulator replica mounts
+# this directory and loads only its own shard, so no two devices share a secret.
+i=0
+while [ "$i" -lt "$SENSOR_DEVICE_COUNT" ]; do
+    if ! pfx_is_current "$SENSOR_TLS_DIR/device-EQ-$i.pfx" sslclient; then
+        issue_certificate \
+            "sensor-EQ-$i" \
+            "EQ-$i" \
+            clientAuth \
+            "URI:spiffe://industrial-platform/sensor/EQ-$i" \
+            "$SENSOR_TLS_DIR" \
+            "device-EQ-$i.pfx"
+    fi
+    i=$((i + 1))
+done
+
 cp "$AUTHORITY_DIR/ca.crt" "$INGESTION_TLS_DIR/ca.crt.tmp"
 mv "$INGESTION_TLS_DIR/ca.crt.tmp" "$INGESTION_TLS_DIR/ca.crt"
 cp "$AUTHORITY_DIR/ca.crt" "$EDGE_TLS_DIR/ca.crt.tmp"
 mv "$EDGE_TLS_DIR/ca.crt.tmp" "$EDGE_TLS_DIR/ca.crt"
+cp "$AUTHORITY_DIR/ca.crt" "$SENSOR_TLS_DIR/ca.crt.tmp"
+mv "$SENSOR_TLS_DIR/ca.crt.tmp" "$SENSOR_TLS_DIR/ca.crt"
 
 fingerprint=$(
     openssl pkcs12 -in "$EDGE_TLS_DIR/client.pfx" -passin pass: -clcerts -nokeys 2>/dev/null \
@@ -113,10 +144,14 @@ mv "$INGESTION_TLS_DIR/allowed-client-sha256.txt.tmp" \
     "$INGESTION_TLS_DIR/allowed-client-sha256.txt"
 
 # The private CA key stays 0600 in its own volume and is never mounted into an application.
-# Application volumes contain only the one private leaf key each process needs.
+# The gateway volumes hold that process's single leaf key. Sensor replicas share one device
+# directory for development simplicity but each loads only its own shard at startup.
 chmod 0444 \
     "$INGESTION_TLS_DIR/server.pfx" \
     "$INGESTION_TLS_DIR/ca.crt" \
     "$INGESTION_TLS_DIR/allowed-client-sha256.txt" \
     "$EDGE_TLS_DIR/client.pfx" \
-    "$EDGE_TLS_DIR/ca.crt"
+    "$EDGE_TLS_DIR/server.pfx" \
+    "$EDGE_TLS_DIR/ca.crt" \
+    "$SENSOR_TLS_DIR/ca.crt" \
+    "$SENSOR_TLS_DIR"/device-EQ-*.pfx

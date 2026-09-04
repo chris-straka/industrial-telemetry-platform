@@ -107,6 +107,10 @@ public static class SensorSecurityExtensions
 
         builder.Services.AddSingleton(state);
         builder.WebHost.ConfigureKestrel(kestrel =>
+        {
+            // Explicit code endpoints suppress the image's default binding, so the ops
+            // listener is bound here too whenever the sensor listener exists.
+            kestrel.ListenAnyIP(state.Options.OpsListenPort);
             kestrel.ListenAnyIP(
                 state.Options.ListenPort,
                 listen =>
@@ -121,8 +125,8 @@ public static class SensorSecurityExtensions
                                 trustedRoot
                             );
                     })
-            )
-        );
+            );
+        });
     }
 }
 

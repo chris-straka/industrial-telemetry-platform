@@ -193,14 +193,18 @@ post_edge_reading() {
     message_id=$1
     sequence_number=$2
     occurred_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-    payload="{\"messageId\":\"$message_id\",\"equipmentId\":\"E2E-GATEWAY\",\"sequenceNumber\":$sequence_number,\"occurredAt\":\"$occurred_at\",\"engineTemperature\":80.0,\"oilPressure\":40.0}"
+    # A real device identity: the EQ-0 client certificate binds to this equipment ID.
+    payload="{\"messageId\":\"$message_id\",\"equipmentId\":\"EQ-0\",\"sequenceNumber\":$sequence_number,\"occurredAt\":\"$occurred_at\",\"engineTemperature\":80.0,\"oilPressure\":40.0}"
 
     status="$(
         compose exec -T edge-gateway curl --silent --show-error \
             --output /dev/null --write-out '%{http_code}' --max-time 10 \
             --header 'Content-Type: application/json' \
+            --cacert /tls/ca.crt \
+            --cert /e2e-sensor-tls/device-EQ-0.pfx: \
+            --cert-type p12 \
             --data "$payload" \
-            http://localhost:8080/api/local/telemetry
+            https://edge-gateway:8443/api/local/telemetry
     )"
 
     if [ "$status" != '202' ]; then
@@ -328,6 +332,28 @@ if compose exec -T edge-gateway curl --silent --show-error \
     --cacert /tls/ca.crt \
     https://ingestion-api:8081/ >/dev/null 2>&1; then
     fail 'ingestion completed a TLS request that supplied no gateway client certificate'
+fi
+
+log 'Checking that the sensor endpoint requires a device certificate'
+if compose exec -T edge-gateway curl --silent --show-error \
+    --output /dev/null --max-time 10 \
+    --cacert /tls/ca.crt \
+    --header 'Content-Type: application/json' \
+    --data '{"messageId":"bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb","equipmentId":"EQ-0","sequenceNumber":1,"occurredAt":"2026-01-01T00:00:00Z","engineTemperature":80.0,"oilPressure":40.0}' \
+    https://edge-gateway:8443/api/local/telemetry >/dev/null 2>&1; then
+    fail 'sensor endpoint completed a TLS request that supplied no device certificate'
+fi
+
+log 'Checking that a device certificate cannot speak for another shard'
+if compose exec -T edge-gateway curl --fail --silent --show-error \
+    --output /dev/null --max-time 10 \
+    --header 'Content-Type: application/json' \
+    --cacert /tls/ca.crt \
+    --cert /e2e-sensor-tls/device-EQ-0.pfx: \
+    --cert-type p12 \
+    --data '{"messageId":"cccccccc-cccc-4ccc-cccc-cccccccccccc","equipmentId":"EQ-1","sequenceNumber":1,"occurredAt":"2026-01-01T00:00:00Z","engineTemperature":80.0,"oilPressure":40.0}' \
+    https://edge-gateway:8443/api/local/telemetry >/dev/null 2>&1; then
+    fail 'sensor endpoint accepted an EQ-1 reading on the EQ-0 device certificate'
 fi
 
 MESSAGE_ID_1='11111111-1111-4111-8111-111111111111'

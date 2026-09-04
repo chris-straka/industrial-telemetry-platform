@@ -67,7 +67,12 @@ public sealed class SensorSecurityTests
         // In-memory certificates through the same wiring the file loader feeds in
         // production; the loader itself is covered by the ingestion mTLS tests.
         using var state = new SensorSecurityState(
-            new SensorSecurityOptions { Enabled = true, ListenPort = 0 },
+            new SensorSecurityOptions
+            {
+                Enabled = true,
+                OpsListenPort = 0,
+                ListenPort = 0,
+            },
             server,
             ca
         );
@@ -76,11 +81,6 @@ public sealed class SensorSecurityTests
             await using var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
             var builder = WebApplication.CreateSlimBuilder();
-            // Explicit Listen endpoints suppress UseUrls binding, so the plaintext
-            // ops listener is configured in code like the TLS one.
-            builder.WebHost.ConfigureKestrel(kestrel =>
-                kestrel.Listen(IPAddress.Loopback, 0)
-            );
             builder.Services.AddDbContext<EdgeDbContext>(options =>
                 options.UseSqlite(connection)
             );

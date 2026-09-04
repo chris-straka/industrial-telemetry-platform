@@ -5,6 +5,13 @@ GET {{GatewayAddr}}/buffer
 
 ### Inject a reading as if it came from a sensor.
 ### MessageId is minted by the CALLER on purpose -- that is the whole point.
+### Sensor traffic requires a per-device client certificate whose subject matches
+### the equipment ID, so this plaintext POST returns 403 by design. To inject with
+### the EQ-0 device key, copy device-EQ-0.pfx out of the sensor_tls_data volume and run:
+### curl -k --cert-type p12 --cert ./device-EQ-0.pfx: \
+###   -H 'Content-Type: application/json' -d @reading.json \
+###   https://localhost:5273/api/local/telemetry
+### (scripts/e2e.sh post_edge_reading shows the same exchange inside Compose.)
 POST {{GatewayAddr}}/api/local/telemetry
 Content-Type: application/json
 

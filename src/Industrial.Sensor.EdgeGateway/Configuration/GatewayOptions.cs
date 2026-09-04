@@ -83,6 +83,12 @@ public sealed class SensorSecurityOptions : IValidatableObject
 
     public bool Enabled { get; set; }
 
+    // Plaintext HTTP listener for health and buffer inspection. Bound explicitly (rather
+    // than the image default) because any code-configured Kestrel endpoint suppresses
+    // default URL binding; keep this aligned with the published port and healthchecks.
+    [Range(1, 65535)]
+    public int OpsListenPort { get; set; } = 8080;
+
     // Dedicated HTTPS listener for sensor traffic. Health and buffer inspection stay on
     // plaintext HTTP: they never accept readings and the compose healthchecks use them.
     [Range(1, 65535)]

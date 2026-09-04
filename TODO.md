@@ -26,8 +26,10 @@ per-gateway revocation, but it is not a production certificate lifecycle.
 
 Remaining work:
 
-- authenticate and encrypt sensor-to-edge traffic without turning one fleet-wide shared secret
-  into every device's identity;
+- sensor-to-edge traffic now uses mutual TLS: the dev CA issues one client certificate per
+  simulated device (CN=EQ-N), each emulator replica loads only its shard over per-device
+  HttpClient chains, and the gateway binds the certificate subject to the claimed equipment
+  ID (403 otherwise). Proven by unit tests, a live TLS round trip, and e2e identity checks.
 - add Kafka TLS/SASL and Postgres TLS plus workload-specific credentials;
 - protect observability ingestion and operator UIs;
 - replace the development CA bootstrap with managed enrollment, renewal, rotation, revocation, and

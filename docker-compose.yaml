@@ -13,6 +13,7 @@ services:
       - dev_pki_authority_data:/authority
       - ingestion_tls_data:/ingestion
       - edge_gateway_tls_data:/edge
+      - sensor_tls_data:/sensors
 
   web-dashboard:
     image: node:24-alpine
@@ -107,6 +108,8 @@ services:
       dockerfile: src/Industrial.Sensor.EdgeGateway/Dockerfile
     ports:
       - "127.0.0.1:5272:8080"
+      # Sensor mTLS listener, for manual demos with a device certificate.
+      - "127.0.0.1:5273:8443"
     volumes:
       - edge_buffer_data:/data
       - edge_gateway_tls_data:/tls:ro
@@ -118,6 +121,13 @@ services:
       - TransportSecurity__ClientCertificatePath=/tls/client.pfx
       - TransportSecurity__ClientCertificatePassword=
       - TransportSecurity__TrustedServerCaPath=/tls/ca.crt
+      # Sensor mTLS: per-device client certificates on a dedicated HTTPS listener.
+      # Health and buffer inspection stay on plaintext :8080, which can no longer
+      # accept readings once this is on.
+      - SensorSecurity__Enabled=true
+      - SensorSecurity__ServerCertificatePath=/tls/server.pfx
+      - SensorSecurity__ServerCertificatePassword=
+      - SensorSecurity__TrustedSensorCaPath=/tls/ca.crt
       - Buffer__Path=/data/edge-buffer.db
       - Buffer__MaxDepth=500000
       - Buffer__SettledIdRetentionHours=24
@@ -185,8 +195,12 @@ services:
     build:
       context: .
       dockerfile: src/Industrial.Sensor.Emulator/Dockerfile
+    volumes:
+      - sensor_tls_data:/tls:ro
     environment:
-      - Gateway__Url=http://edge-gateway:8080
+      - Gateway__Url=https://edge-gateway:8443
+      - Gateway__ClientCertificateDirectory=/tls
+      - Gateway__TrustedSensorCaPath=/tls/ca.crt
       - Emulator__DeviceCount=4
       - Emulator__IntervalSeconds=2
       - Emulator__BufferCapacity=10000
@@ -203,8 +217,12 @@ services:
     build:
       context: .
       dockerfile: src/Industrial.Sensor.Emulator/Dockerfile
+    volumes:
+      - sensor_tls_data:/tls:ro
     environment:
-      - Gateway__Url=http://edge-gateway:8080
+      - Gateway__Url=https://edge-gateway:8443
+      - Gateway__ClientCertificateDirectory=/tls
+      - Gateway__TrustedSensorCaPath=/tls/ca.crt
       - Emulator__DeviceCount=4
       - Emulator__IntervalSeconds=2
       - Emulator__BufferCapacity=10000
@@ -221,8 +239,12 @@ services:
     build:
       context: .
       dockerfile: src/Industrial.Sensor.Emulator/Dockerfile
+    volumes:
+      - sensor_tls_data:/tls:ro
     environment:
-      - Gateway__Url=http://edge-gateway:8080
+      - Gateway__Url=https://edge-gateway:8443
+      - Gateway__ClientCertificateDirectory=/tls
+      - Gateway__TrustedSensorCaPath=/tls/ca.crt
       - Emulator__DeviceCount=4
       - Emulator__IntervalSeconds=2
       - Emulator__BufferCapacity=10000
@@ -466,6 +488,7 @@ volumes:
   tempo_data:
   grafana_data:
   alertmanager_data:
+  sensor_tls_data:
   dev_pki_authority_data:
   ingestion_tls_data:
   edge_gateway_tls_data:

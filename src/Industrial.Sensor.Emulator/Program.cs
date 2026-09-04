@@ -44,6 +44,7 @@ builder
 // To use them earlier (like to register services like Otel) I need this
 var otel = builder.Configuration.GetSection(OTelOptions.Section).Get<OTelOptions>()!;
 var emulator = builder.Configuration.GetSection(EmulatorOptions.Section).Get<EmulatorOptions>()!;
+var gateway = builder.Configuration.GetSection(GatewayOptions.Section).Get<GatewayOptions>()!;
 
 // Otel
 // builder.Services is the IServiceCollection not the IServiceProvider (DI container)
@@ -76,16 +77,47 @@ builder
 // HttpClient is a thin wrapper over an HttpMessageHandler chain (Polly on top, Sockets at the bottom).
 // A captured client holds onto one chain forever, and DNS is only resolved when a new connection opens.
 // So, the undisposed client keeps talking to the gateway's old IP indefinitely even if it changed.
-builder
-    .Services.AddHttpClient(
-        TelemetryClient.Name,
-        (serviceProvider, client) =>
-            client.BaseAddress = new Uri(
-                // this grabs it from the DI container (no earlier .Get<T> necessary)
-                serviceProvider.GetRequiredService<IOptions<GatewayOptions>>().Value.Url
+// One identity per device, loaded here so a missing shard file fails fast at startup.
+// An https gateway URL requires every device to present its own client certificate;
+// plaintext keeps the single anonymous client for local runs without PKI.
+var deviceCredentials = DeviceCredentials.LoadForShard(gateway, emulator);
+builder.Services.AddSingleton(deviceCredentials);
+if (deviceCredentials.UsesTls)
+{
+    foreach (var equipmentId in deviceCredentials.Certificates.Keys)
+    {
+        var deviceId = equipmentId;
+        var deviceCertificate = deviceCredentials.Certificates[deviceId];
+        builder
+            .Services.AddHttpClient(
+                TelemetryClient.NameFor(deviceId),
+                (serviceProvider, client) =>
+                    client.BaseAddress = new Uri(
+                        serviceProvider.GetRequiredService<IOptions<GatewayOptions>>().Value.Url
+                    )
             )
-    )
-    .AddStandardResilienceHandler(); // Adds Polly
+            .ConfigurePrimaryHttpMessageHandler(() =>
+                SensorTlsHandlerFactory.CreateDeviceHandler(
+                    deviceCertificate,
+                    deviceCredentials.TrustedRoot!
+                )
+            )
+            .AddStandardResilienceHandler(); // Adds Polly
+    }
+}
+else
+{
+    builder
+        .Services.AddHttpClient(
+            TelemetryClient.Name,
+            (serviceProvider, client) =>
+                client.BaseAddress = new Uri(
+                    // this grabs it from the DI container (no earlier .Get<T> necessary)
+                    serviceProvider.GetRequiredService<IOptions<GatewayOptions>>().Value.Url
+                )
+        )
+        .AddStandardResilienceHandler(); // Adds Polly
+}
 
 // Polly adds retries with exponential backoff + jitter and a circuit breaker.
 // Some sensors won't have this, but some do have backoff + jitter at the firmware level.
@@ -133,6 +165,9 @@ public static class TelemetryClient
 {
     public const string Name = "telemetry";
     public const string Route = "/api/local/telemetry";
+
+    // Named HttpClient per device when mTLS is on; the plaintext client keeps Name.
+    public static string NameFor(string equipmentId) => $"{Name}-{equipmentId}";
 }
 
 /// <summary>
@@ -232,6 +267,7 @@ public class AcquisitionWorker(
 public class TransmissionWorker(
     Channel<TelemetryDto> channel,
     IHttpClientFactory httpClientFactory,
+    DeviceCredentials deviceCredentials,
     SensorMetrics metrics,
     ILogger<TransmissionWorker> logger
 ) : BackgroundService
@@ -251,7 +287,13 @@ public class TransmissionWorker(
                 // The factory pools chains for TelemetryClient.Name that the client uses.
                 // It then expires each chain after HandlerLifetime (2 mins by default).
                 // This lets it detect DNS changes every 2 mins (DNS is only stale for 2 mins)
-                var client = httpClientFactory.CreateClient(TelemetryClient.Name);
+                //
+                // With mTLS each device gets its own named client, so the presented
+                // certificate always matches the reading's equipment ID.
+                var clientName = deviceCredentials.UsesTls
+                    ? TelemetryClient.NameFor(data.EquipmentId)
+                    : TelemetryClient.Name;
+                var client = httpClientFactory.CreateClient(clientName);
 
                 // The stoppingToken will abort the HTTP call on shutdown
                 // But that only stops the client from waiting for a response

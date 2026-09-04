@@ -2,7 +2,7 @@ using System.ComponentModel.DataAnnotations;
 
 namespace Industrial.Sensor.Emulator.Configuration;
 
-public class GatewayOptions
+public class GatewayOptions : IValidatableObject
 {
     public const string Section = "Gateway";
 
@@ -10,6 +10,37 @@ public class GatewayOptions
     [Required(AllowEmptyStrings = false)]
     [Url]
     public string Url { get; set; } = string.Empty;
+
+    // Directory holding one device-EQ-N.pfx per simulated device plus the sensor CA.
+    // Required when Url is https: every device presents its own client certificate,
+    // so no two devices share an identity.
+    public string ClientCertificateDirectory { get; set; } = string.Empty;
+
+    public string TrustedSensorCaPath { get; set; } = string.Empty;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (
+            !Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+        )
+            yield break;
+
+        if (string.IsNullOrWhiteSpace(ClientCertificateDirectory))
+        {
+            yield return new ValidationResult(
+                "Gateway:ClientCertificateDirectory is required for an https gateway URL.",
+                [nameof(ClientCertificateDirectory)]
+            );
+        }
+
+        if (string.IsNullOrWhiteSpace(TrustedSensorCaPath))
+        {
+            yield return new ValidationResult(
+                "Gateway:TrustedSensorCaPath is required for an https gateway URL.",
+                [nameof(TrustedSensorCaPath)]
+            );
+        }
+    }
 }
 
 public class EmulatorOptions

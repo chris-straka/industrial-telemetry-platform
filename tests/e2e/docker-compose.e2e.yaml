@@ -12,6 +12,10 @@ services:
   edge-gateway:
     image: industrialplatform-e2e-edge-gateway
     ports: !reset []
+    volumes:
+      # Test-only: the harness posts sensor readings from inside this container, so it
+      # needs one device key. Production gateways never hold device private keys.
+      - sensor_tls_data:/e2e-sensor-tls:ro
     environment:
       Buffer__QuarantineRetentionHours: "168"
       Buffer__QuarantineMaxRows: "10000"
@@ -19,6 +23,10 @@ services:
       Uploader__BaseBackoffSeconds: "1"
       Uploader__MaxBackoffSeconds: "2"
       Uploader__UploadTimeoutSeconds: "3"
+      SensorSecurity__Enabled: "true"
+      SensorSecurity__ServerCertificatePath: /tls/server.pfx
+      SensorSecurity__ServerCertificatePassword: ""
+      SensorSecurity__TrustedSensorCaPath: /tls/ca.crt
 
   diagnostics-worker:
     image: industrialplatform-e2e-diagnostics-worker
