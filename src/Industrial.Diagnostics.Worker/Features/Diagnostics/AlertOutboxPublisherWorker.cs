@@ -1,10 +1,14 @@
 using System.Text;
+using System.Text.Json;
 
 using Confluent.Kafka;
+
+using Google.GenAI;
 
 using Industrial.Diagnostics.Worker.Configuration;
 using Industrial.Diagnostics.Worker.Infrastructure;
 using Industrial.Diagnostics.Worker.Infrastructure.Data;
+using Industrial.Shared;
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -19,8 +23,10 @@ public sealed class AlertOutboxPublisherWorker(
     IProducer<string, string> producer,
     IOptions<KafkaOptions> kafkaOptions,
     IOptions<OutboxOptions> outboxOptions,
+    IOptions<GeminiOptions> geminiOptions,
     WorkerMetrics metrics,
-    ILogger<AlertOutboxPublisherWorker> logger
+    ILogger<AlertOutboxPublisherWorker> logger,
+    Client gemini
 ) : BackgroundService
 {
     private readonly TimeSpan _idleDelay = TimeSpan.FromMilliseconds(
@@ -56,6 +62,7 @@ public sealed class AlertOutboxPublisherWorker(
                         await SafeDelayAsync(_idleDelay, stoppingToken);
                         break;
                     case PublishOutcome.Published:
+                    case PublishOutcome.Enriched:
                         _consecutiveFailures = 0;
                         break;
                     case PublishOutcome.Failed:
@@ -131,6 +138,14 @@ public sealed class AlertOutboxPublisherWorker(
             return PublishOutcome.Empty;
         }
 
+        if (TryReadPendingEnrichment(pending.Payload, out var pendingAlert))
+        {
+            pending.Payload = await BuildEnrichedPayloadAsync(pendingAlert!, cancellationToken);
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return PublishOutcome.Enriched;
+        }
+
         var alert = new Message<string, string>
         {
             Key = pending.EquipmentId,
@@ -194,6 +209,59 @@ public sealed class AlertOutboxPublisherWorker(
         return PublishOutcome.Published;
     }
 
+    private async Task<string> BuildEnrichedPayloadAsync(
+        TelemetryAlertEnvelope alert,
+        CancellationToken cancellationToken
+    )
+    {
+        logger.LogWarning("ANOMALY: {Id}. Requesting AI analysis...", alert.EquipmentId);
+
+        string aiAdvice;
+        using var aiTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        aiTimeout.CancelAfter(TimeSpan.FromSeconds(10));
+
+        try
+        {
+            var prompt =
+                $"Equipment {alert.EquipmentId} anomaly. Temp: {alert.EngineTemperature:F1}C. Provide 3 steps.";
+            var response = await gemini.Models.GenerateContentAsync(
+                model: geminiOptions.Value.Model,
+                contents: prompt,
+                cancellationToken: aiTimeout.Token
+            );
+
+            var responseText = response.Text ?? throw new Exception("Could not fetch from AI");
+            aiAdvice = responseText.Length <= 8_000 ? responseText : responseText[..8_000];
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            logger.LogError(exception, "AI call failed");
+            metrics.AiFailures.Add(1);
+            aiAdvice = "AI unavailable";
+        }
+
+        return JsonSerializer.Serialize(alert with { Diagnostics = aiAdvice });
+    }
+
+    private static bool TryReadPendingEnrichment(
+        string payload,
+        out TelemetryAlertEnvelope? alert
+    )
+    {
+        try
+        {
+            alert = JsonSerializer.Deserialize<TelemetryAlertEnvelope>(payload);
+            return alert is not null && string.IsNullOrEmpty(alert.Diagnostics);
+        }
+        catch (JsonException)
+        {
+            // Payloads are created by this process, but preserve the existing behavior for a
+            // manually repaired/legacy row: publish it unchanged instead of wedging the outbox.
+            alert = null;
+            return false;
+        }
+    }
+
     private async Task BackoffAsync(CancellationToken cancellationToken)
     {
         _consecutiveFailures++;
@@ -223,6 +291,7 @@ public sealed class AlertOutboxPublisherWorker(
     private enum PublishOutcome
     {
         Empty,
+        Enriched,
         Published,
         Failed,
     }

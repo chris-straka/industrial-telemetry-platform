@@ -4,8 +4,6 @@ using System.Text.Json;
 
 using Confluent.Kafka;
 
-using Google.GenAI;
-
 using Industrial.Diagnostics.Worker.Configuration;
 using Industrial.Diagnostics.Worker.Features.Diagnostics.ML;
 using Industrial.Diagnostics.Worker.Infrastructure;
@@ -23,13 +21,11 @@ public class TelemetryConsumerWorker(
     IDbContextFactory<AppDbContext> contextFactory,
     ILogger<TelemetryConsumerWorker> logger,
     IOptions<KafkaOptions> kafkaOptions,
-    IOptions<GeminiOptions> geminiOptions,
     IOptions<ConsumerOptions> consumerOptions,
     IDeadLetterPublisher deadLetterPublisher,
     DiagnosticsConsumerReadiness readiness,
     ModelEngine modelEngine,
-    WorkerMetrics metrics,
-    Client gemini
+    WorkerMetrics metrics
 ) : BackgroundService
 {
     private static readonly JsonSerializerOptions TelemetryJsonOptions = new()
@@ -135,6 +131,10 @@ public class TelemetryConsumerWorker(
                         continue;
                     }
 
+                    // JSON permits an equivalent instant with any numeric UTC offset, but Npgsql
+                    // accepts DateTimeOffset for timestamptz only when its offset is zero.
+                    data = NormalizeTimestamps(data!);
+
                     activity = WorkerTracing.Source.StartActivity(
                         "telemetry.process",
                         ActivityKind.Consumer,
@@ -145,11 +145,11 @@ public class TelemetryConsumerWorker(
                             new("messaging.destination.name", consumeResult.Topic),
                             new("messaging.kafka.offset", consumeResult.Offset.Value),
                             new("messaging.kafka.partition", consumeResult.Partition.Value),
-                            new("equipment.id", data!.EquipmentId),
+                            new("equipment.id", data.EquipmentId),
                         ]
                     );
 
-                    await HandleReadingAsync(data!, messageId, stoppingToken);
+                    await HandleReadingAsync(data, messageId, stoppingToken);
                     consumer.Commit(consumeResult);
                     _consecutiveFailures = 0;
                 }
@@ -316,13 +316,15 @@ public class TelemetryConsumerWorker(
 
             if (result.IsAnomaly)
             {
-                var payload = await BuildAnomalyPayloadAsync(data, stoppingToken);
                 db.AlertOutboxMessages.Add(
                     new AlertOutboxMessage
                     {
                         MessageId = messageId,
                         EquipmentId = data.EquipmentId,
-                        Payload = payload,
+                        // Empty Diagnostics is an internal "needs enrichment" marker. The outbox
+                        // publisher performs the optional network call after this telemetry row and
+                        // outbox row have committed, so Gemini latency cannot stall source offsets.
+                        Payload = BuildPendingAnomalyPayload(data),
                         TraceParent = Activity.Current?.Id,
                     }
                 );
@@ -374,49 +376,16 @@ public class TelemetryConsumerWorker(
         }
     }
 
-    private async Task<string> BuildAnomalyPayloadAsync(
-        TelemetryEnvelope data,
-        CancellationToken ct
-    )
-    {
-        logger.LogWarning("ANOMALY: {Id}. Requesting AI analysis...", data.EquipmentId);
-
-        string aiAdvice;
-
-        using var aiTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        aiTimeout.CancelAfter(TimeSpan.FromSeconds(10));
-
-        try
-        {
-            var prompt =
-                $"Equipment {data.EquipmentId} anomaly. Temp: {data.EngineTemperature:F1}C. Provide 3 steps.";
-
-            var res = await gemini.Models.GenerateContentAsync(
-                model: geminiOptions.Value.Model,
-                contents: prompt,
-                cancellationToken: aiTimeout.Token
-            );
-
-            var responseText = res.Text ?? throw new Exception("Could not fetch from AI");
-            aiAdvice = responseText.Length <= 8_000 ? responseText : responseText[..8_000];
-        }
-        catch (Exception ex) when (!ct.IsCancellationRequested)
-        {
-            logger.LogError(ex, "AI call failed");
-            metrics.AiFailures.Add(1);
-            aiAdvice = "AI unavailable";
-        }
-
-        return JsonSerializer.Serialize(
+    private static string BuildPendingAnomalyPayload(TelemetryEnvelope data) =>
+        JsonSerializer.Serialize(
             new TelemetryAlertEnvelope(
                 data.MessageId,
                 data.EquipmentId,
                 data.OccurredAt,
                 data.EngineTemperature,
-                aiAdvice
+                Diagnostics: string.Empty
             )
         );
-    }
 
     private static bool TryValidate(
         TelemetryEnvelope? data,
@@ -473,6 +442,13 @@ public class TelemetryConsumerWorker(
         reason = string.Empty;
         return true;
     }
+
+    internal static TelemetryEnvelope NormalizeTimestamps(TelemetryEnvelope data) =>
+        data with
+        {
+            OccurredAt = data.OccurredAt.ToUniversalTime(),
+            ReceivedAt = data.ReceivedAt.ToUniversalTime(),
+        };
 
     private static bool IsSupportedMeasurement(double value) =>
         double.IsFinite(value) && Math.Abs(value) <= float.MaxValue;

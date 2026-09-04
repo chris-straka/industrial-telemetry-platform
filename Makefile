@@ -24,7 +24,7 @@ upd: ## docker compose up -d
 down: ## docker compose down
 	docker compose down
 
-clean: ## docker compose down -v (WIPES edge, Postgres, and Kafka data)
+clean: ## docker compose down -v (WIPES all local data, observability history, and dev PKI)
 	docker compose down -v
 
 train: ## rebuild the online IID detector configuration in model.zip
@@ -103,7 +103,7 @@ demo-help: ## print the store-and-forward outage demo, step by step
 	@echo "4. make chaos-gateway-kill   # kill the gateway TOO, mid-outage"
 	@echo "5. make queue                # buffer survived the restart"
 	@echo "6. make chaos-cloud-up       # cloud returns; queue drains oldest-first"
-	@echo "7. make verify               # queue/outbox drained; report duplicates, gaps, lag"
+	@echo "7. make verify               # quiesce, drain queue/Kafka/outbox, then audit"
 
 # The cloud dies. Sensors and gateway keep running.
 fleet: ## start extra emulator containers (3 replicas, EQ-0..EQ-11)

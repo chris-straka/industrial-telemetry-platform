@@ -30,7 +30,7 @@ projects:
         text: "Engineered an edge gateway with a durable SQLite WAL buffer (synchronous=FULL) to survive total cloud outages, shedding excess load via HTTP 429 backpressure to keep the buffer bounded."
       - id: idempotency
         track: swe
-        text: "Designed the post-gateway pipeline for at-least-once delivery over gRPC and Kafka, minting UUIDv7 idempotency keys at the sensor origin and deduplicating replays in Postgres."
+        text: "Designed durable post-gateway custody with at-least-once gRPC and Kafka delivery for valid readings, minting UUIDv7 idempotency keys at the sensor origin and deduplicating replays in Postgres."
       - id: tracing
         track: swe
         text: "Implemented distributed W3C tracing, metrics, and logging across the pipeline using OpenTelemetry, aggregating into Prometheus, Tempo, and Loki for Grafana dashboards."
@@ -84,7 +84,7 @@ projects:
         text: "Aligned edge admission bounds with cloud-side validation so unprocessable input is refused at the device boundary, including malformed trace context caught before it reaches a Kafka header."
       - id: db-schema
         track: swe
-        text: "Designed the Postgres schema around its access patterns, adding unique idempotency indexes, a composite index for pending-outbox scans, and an equipment/time index for detector warm-up."
+        text: "Designed the Postgres schema with a unique idempotency index, a composite index for pending-outbox scans, and persisted detector provenance for historical anomaly decisions."
       - id: kafka-keying
         track: both
         text: "Keyed Kafka events by EquipmentId so each machine's readings stay ordered on one partition, enabling per-equipment detector state while consumption scales across machines."
@@ -96,7 +96,7 @@ projects:
         text: "Set up GitHub Actions CI running a warnings-as-errors build, EF Core migration-drift detection, tests with coverage, frontend lint and build, Compose validation, and Helm chart lint and render."
       - id: reliability-boundary
         track: both
-        text: "Defined an explicit reliability boundary — best-effort before the gateway's 202 Accepted, durably at-least-once after it — and backed it with regression tests, an isolated failure harness, chaos targets, and an automated audit."
+        text: "Defined an explicit reliability boundary—best-effort before the gateway's 202 Accepted and durable custody after it, with permanent rejections quarantined and metered—backed by regression tests, an isolated failure harness, chaos targets, and an automated audit."
 
 
       # sharper variants of working-set lines

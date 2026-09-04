@@ -43,7 +43,7 @@ sensor-emulator (N devices, mints MessageId + OccurredAt)
    │  + exponential backoff w/ jitter                    │
    │  + OTel: queue depth, oldest message age            │
    └────────────────────────┬────────────────────────────┘
-                            │ gRPC unary, 200 readings a call (HTTP/2 + mTLS), WAN
+                            │ gRPC unary, up to 200 readings a call (HTTP/2 + mTLS), WAN
                             ▼
                         ingestion-api
                             │ produces telemetry-events, keyed by EquipmentId
@@ -68,9 +68,10 @@ The gateway's `202` splits the pipeline into two reliability zones.
 Before it, delivery is best-effort. A full sensor channel drops a new sample, and an HTTP send that
 exhausts its bounded retry policy drops the dequeued sample. Separate metrics count both.
 
-After it, delivery is durable at-least-once. The gateway has fsynced the reading to SQLite,
-ambiguous gRPC/Kafka failures retry, and the reading is deleted only after ingestion names its
-`MessageId` accepted or permanently rejected.
+After it, custody and retry are durable. For a reading that is not deterministically rejected,
+delivery through gRPC and Kafka is at-least-once: the gateway has fsynced the reading to SQLite,
+ambiguous failures retry, and the reading is deleted only after ingestion names its `MessageId`
+accepted. An explicit rejection follows the separate permanent-loss path below.
 
 A deterministic cloud rejection is permanent loss from the live pipeline, not successful
 delivery. The gateway atomically preserves the original row in a bounded SQLite quarantine before

@@ -24,9 +24,10 @@ makes a stateless service trivial to load balance and scale. Identity is only wa
 the workload is PARTITIONED -- when each replica owns a distinct shard of something.
 
 The emulator is partitioned: replica 0 must own EQ-0..EQ-3 and nothing else, replica 1
-EQ-4..EQ-7, and so on -- or two containers both claim to be EQ-0, their sequence numbers
-collide, and `make verify` reports duplicates that no part of the pipeline actually
-caused.
+EQ-4..EQ-7, and so on. If two containers both claim to be EQ-0, independent sequences are
+interleaved under one equipment identity: the audit infers misleading restart boundaries and the
+stateful detector learns from two simulated machines as though they were one. Random MessageIds
+still differ, so the unique-ID check cannot diagnose that identity collision.
 
 ## How each orchestrator answers this
 

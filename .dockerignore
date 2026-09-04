@@ -12,6 +12,10 @@
 **/node_modules
 **/dist
 **/.vite
+**/.terraform
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
 **/*.user
 **/*.suo
 **/*.db

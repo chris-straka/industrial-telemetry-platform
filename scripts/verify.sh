@@ -33,7 +33,10 @@ done
 
 restore_sensors() {
     exit_code=$?
-    trap - EXIT INT TERM
+    # Avoid recursive EXIT handling, but keep restoration immune to a second
+    # interrupt so every emulator that was running before the audit comes back.
+    trap - EXIT
+    trap '' INT TERM
 
     if [ "${#running_sensors[@]}" -gt 0 ]; then
         printf '\nRestarting previously running sensor emulators...\n'

@@ -25,7 +25,6 @@ jobs:
     env:
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
-      TF_VAR_kubeconfig_path: ${{ runner.temp }}/industrial-platform-kubeconfig
       TF_VAR_kafka_sasl_username: ${{ secrets.PROD_KAFKA_SASL_USERNAME }}
       TF_VAR_kafka_sasl_password: ${{ secrets.PROD_KAFKA_SASL_PASSWORD }}
     steps:
@@ -56,7 +55,9 @@ jobs:
           KUBECONFIG_B64: ${{ secrets.PROD_KUBECONFIG_B64 }}
         run: |
           umask 077
-          printf '%s' "$KUBECONFIG_B64" | base64 --decode > "$TF_VAR_kubeconfig_path"
+          KUBECONFIG_PATH="$RUNNER_TEMP/industrial-platform-kubeconfig"
+          printf 'TF_VAR_kubeconfig_path=%s\n' "$KUBECONFIG_PATH" >> "$GITHUB_ENV"
+          printf '%s' "$KUBECONFIG_B64" | base64 --decode > "$KUBECONFIG_PATH"
 
       - name: Initialize encrypted remote state
         env:

@@ -58,7 +58,7 @@ public static class IngestTelemetryEndpoint
                     request.MessageId ?? Guid.CreateVersion7().ToString("D"),
                     request.EquipmentId,
                     SequenceNumber: 1,
-                    request.OccurredAt ?? DateTimeOffset.UtcNow,
+                    (request.OccurredAt ?? DateTimeOffset.UtcNow).ToUniversalTime(),
                     DateTimeOffset.UtcNow,
                     request.EngineTemperature,
                     request.OilPressure

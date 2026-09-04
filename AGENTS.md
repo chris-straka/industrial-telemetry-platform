@@ -46,9 +46,11 @@ reading. Quarantine is forensic retention, not another delivery queue; operators
 `GET /buffer/quarantine?limit=100`. Gateway admission and ingestion validation should remain
 aligned so this path is exceptional.
 
-`make verify` is an audit, not a mathematical proof. It requires a drained edge queue, a drained
-alert outbox, non-empty Postgres data, and no duplicate IDs. It reports sequence gaps by inferred
-emulator run. It cannot infer a sensor-side tail drop without an origin-side run total.
+`make verify` is an audit, not a mathematical proof. It briefly quiesces active Compose sensor
+containers, waits for the edge queue, diagnostics consumer lag, and alert outbox to drain, then
+requires non-empty Postgres data and no duplicate IDs before restoring those sensors. It reports
+sequence gaps by inferred emulator run. It cannot infer a sensor-side tail drop without an
+origin-side run total.
 
 ## Rules that protect the contract
 
