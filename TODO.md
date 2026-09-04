@@ -80,6 +80,10 @@ Before enabling an apply workflow:
   secrets without putting their values in Terraform variables or state;
 - provide a production CA and a persistent, independently revocable identity and volume for each
   real gateway;
+- close the transport gap vs Compose before any security claim: the chart broker is still
+  PLAINTEXT with no ACLs, the apps get no Kafka client identities, and PostgreSQL has no
+  TLS or workload roles (`helm lint`/`helm template` and `make infra-validate` pass, which
+  proves rendering, not deployment);
 - run plan, apply, rollout, failure recovery, rollback, and destroy in a disposable account or
   cluster; and
 - retain a reviewed promotion boundary before any persistent environment changes.

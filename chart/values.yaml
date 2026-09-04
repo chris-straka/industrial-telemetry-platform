@@ -159,8 +159,12 @@ postgresql:
       enabled: true
       size: 8Gi
 
-# Applications currently support only Kafka's PLAINTEXT client protocol. Internal broker traffic
-# keeps the dependency defaults; adding application SASL/TLS configuration is separate hardening.
+# The Compose deployment now requires Kafka mTLS plus authorizer ACLs, and this
+# chart provides neither: the broker stays PLAINTEXT and the applications deploy
+# without client identities, so installing this chart leaves the hardened posture
+# behind. Closing that gap means broker TLS with required client auth, per-workload
+# identities from a managed issuer, the kafka-init ACL set, and TLS/roles for
+# PostgreSQL — all tracked in TODO.md, none rendered here.
 kafka:
   enabled: true
   fullnameOverride: industrial-platform-kafka

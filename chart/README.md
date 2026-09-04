@@ -63,3 +63,8 @@ Kafka and PostgreSQL are enabled by default. Kafka topic provisioning is a regul
 using `--wait` cannot deadlock on application readiness before the topics exist. The observability
 backend dependencies and optional Istio/ExternalSecret resources are disabled until explicitly
 configured.
+
+Known gaps vs the Compose deployment: the chart broker is PLAINTEXT with no authorizer or
+ACLs, the applications get no Kafka client identities, and PostgreSQL has no TLS or workload
+roles. Do not present an install of this chart as carrying the transport posture proven by
+`scripts/e2e.sh` until those are closed (see TODO.md).

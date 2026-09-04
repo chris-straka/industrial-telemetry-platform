@@ -1,5 +1,8 @@
 [tools]
 helm = "latest"
+# Pinned so `make infra-validate` uses the same Terraform line as the
+# production-plan workflow instead of failing on an unselected shim.
+terraform = "1.16"
 # buf: proto linting + BREAKING CHANGE detection against git history.
 #      `buf breaking --against '.git#branch=main'` catches a field renumber or a
 #      removed field before it ships -- the wire-compat mistake that is invisible
