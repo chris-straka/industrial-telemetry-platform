@@ -145,11 +145,11 @@ ingestion requires the client certificate, validates its client-auth purpose and
 checks its SHA-256 fingerprint against an allowlist. Identities survive ordinary restarts, while
 `docker compose down -v` intentionally destroys and regenerates this local PKI.
 
-Sensor-to-edge traffic uses mutual TLS with per-device certificates, and the Kafka and
-Postgres listeners terminate TLS verified against the development CA: Kafka requires a
-per-workload client certificate, and the diagnostics worker connects to Postgres with
-VerifyFull. Kafka has no ACLs yet, Postgres still permits plaintext for host tooling, and
-observability traffic remains plaintext and unauthenticated inside the Compose network. See
+Sensor-to-edge traffic uses mutual TLS with per-device certificates. Kafka requires a
+per-workload client certificate and enforces topic/group/cluster ACLs (broker and
+topic-setup admin are superusers), and the diagnostics worker connects to Postgres with
+VerifyFull as a non-superuser role while plaintext TCP is rejected. Observability traffic
+remains plaintext and unauthenticated inside the Compose network. See
 [Security](docs/Security.md) for the exact boundary and remaining work.
 
 # Install

@@ -375,12 +375,14 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       # INTERNAL is advertised to Compose services; EXTERNAL is advertised to host tools.
-      # Both client listeners terminate TLS. The single-node controller quorum stays
-      # plaintext: it never leaves this broker. The dev keystore password is the same
-      # class of placeholder as the Compose Postgres password.
+      # All three listeners terminate TLS. The controller quorum rides SSL too: with
+      # the authorizer on, the broker must authenticate to the controller as its
+      # superuser identity instead of arriving anonymous over plaintext. The dev
+      # keystore password is the same class of placeholder as the Compose Postgres
+      # password.
       KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:SSL,EXTERNAL:SSL,CONTROLLER:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:SSL,EXTERNAL:SSL,CONTROLLER:SSL
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_SSL_KEYSTORE_LOCATION: /tls/kafka-server.p12
       KAFKA_SSL_KEYSTORE_PASSWORD: changeit
@@ -391,10 +393,18 @@ services:
       KAFKA_SSL_TRUSTSTORE_LOCATION: /tls/ca.p12
       KAFKA_SSL_TRUSTSTORE_PASSWORD: changeit
       KAFKA_SSL_TRUSTSTORE_TYPE: PKCS12
-      # Client listeners require a certificate chained to the dev CA. There are no
-      # Kafka ACLs, so this proves identity at the handshake, not authorization:
-      # a client without a cert is rejected before any API call.
+      # Client listeners require a certificate chained to the dev CA, and the
+      # authorizer below turns that handshake identity into topic/group
+      # permissions. The broker itself and the topic-setup admin stay superusers;
+      # every workload principal gets only what its producer/consumer needs.
       KAFKA_SSL_CLIENT_AUTH: required
+      KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+      # Kafka 4.x keeps the full DN (User:CN=kafka) under the default mapping, which
+      # would force every ACL to carry the DN form. Map to the CN so principals read
+      # as User:kafka, User:kafka-client-ingestion, and so on.
+      KAFKA_SSL_PRINCIPAL_MAPPING_RULES: RULE:^CN=(.*?)$/$$1/,DEFAULT
+      KAFKA_SUPER_USERS: User:kafka;User:kafka-client-admin
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_IS_CONFIGURED: "false"
       # Kafka's own Docker examples use this base64 UUID form for a stable KRaft cluster ID.
       CLUSTER_ID: abcdefghijklmnopqrstuv
       # Keep the previous Bitnami volume layout (`data/`) so changing images does not discard
@@ -455,11 +465,33 @@ services:
       kafka:
         condition: service_healthy
     entrypoint: ["/bin/bash", "-ec"]
+    # Runs as the admin superuser over mTLS. ACLs are additive and this script is
+    # the only writer, so re-running it on an existing broker only re-asserts the
+    # same entries. Web-api consumer groups carry a per-host suffix, hence the
+    # prefixed group pattern. No IDEMPOTENT_WRITE grant: kafka-acls.sh on this
+    # broker version rejects it on CLUSTER, and a live idempotent produce as the
+    # ingestion principal succeeds with topic WRITE+DESCRIBE alone.
     command:
       - |
+        ACLS="/opt/kafka/bin/kafka-acls.sh --bootstrap-server kafka:9092 --command-config /tls/client.properties --add --allow-principal"
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /tls/client.properties --create --if-not-exists --topic telemetry-events --partitions 6 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /tls/client.properties --create --if-not-exists --topic telemetry-alerts --partitions 6 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /tls/client.properties --create --if-not-exists --topic telemetry-events-dlq --partitions 6 --replication-factor 1
+        $$ACLS User:kafka-client-ingestion --operation WRITE --operation DESCRIBE --topic telemetry-events
+        $$ACLS User:kafka-client-ingestion --operation DESCRIBE --cluster
+        $$ACLS User:kafka-client-diagnostics --operation READ --operation DESCRIBE --topic telemetry-events
+        $$ACLS User:kafka-client-diagnostics --operation WRITE --operation DESCRIBE --topic telemetry-alerts
+        $$ACLS User:kafka-client-diagnostics --operation WRITE --operation DESCRIBE --topic telemetry-events-dlq
+        $$ACLS User:kafka-client-diagnostics --operation DESCRIBE --cluster
+        $$ACLS User:kafka-client-diagnostics --operation READ --group diagnostics-group
+        $$ACLS User:kafka-client-webapi --operation READ --operation DESCRIBE --topic telemetry-events
+        $$ACLS User:kafka-client-webapi --operation READ --operation DESCRIBE --topic telemetry-alerts
+        $$ACLS User:kafka-client-webapi --operation DESCRIBE --cluster
+        $$ACLS User:kafka-client-webapi --operation READ --group web-api-dashboard-group --resource-pattern-type prefixed
+        $$ACLS User:kafka-client-ui --operation READ --operation DESCRIBE --topic telemetry-events
+        $$ACLS User:kafka-client-ui --operation READ --operation DESCRIBE --topic telemetry-alerts
+        $$ACLS User:kafka-client-ui --operation READ --operation DESCRIBE --topic telemetry-events-dlq
+        $$ACLS User:kafka-client-ui --operation DESCRIBE --cluster
 
   kafka-ui:
     image: provectuslabs/kafka-ui:v0.7.2

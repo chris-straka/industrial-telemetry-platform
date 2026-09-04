@@ -30,15 +30,18 @@ Remaining work:
   simulated device (CN=EQ-N), each emulator replica loads only its shard over per-device
   HttpClient chains, and the gateway binds the certificate subject to the claimed equipment
   ID (403 otherwise). Proven by unit tests, a live TLS round trip, and e2e identity checks.
-- Kafka client listeners now require mutual TLS: the broker presents a dev-CA server
-  certificate and rejects clients without a dev-CA-chained certificate. Each .NET
-  workload (ingestion, diagnostics, web-api) presents its own PEM identity, the topic
-  setup and kafka-ui use password-protected observer PKCS12 stores, and the broker
-  certificate carries clientAuth so the combined node can still talk to itself over
-  its SSL inter-broker listener. The e2e harness proves a certless SSL client is
-  rejected. Still open: Kafka ACLs (identity without authorization), SASL as an
-  alternative mechanism, and the EXTERNAL listener now also needs a client cert for
-  host tools;
+- Kafka client listeners now require mutual TLS plus authorization: the broker runs
+  StandardAuthorizer with the broker and topic-setup admin as superusers, and
+  kafka-init converges per-principal ACLs (ingestion writes events; diagnostics
+  reads events and writes alerts/DLQ; web-api reads both with a prefixed group
+  pattern for its per-host groups; the UI observer reads). Each .NET workload
+  presents its own PEM identity, the topic setup and kafka-ui use
+  password-protected PKCS12 stores, and the broker certificate carries clientAuth
+  so the combined node can still talk to itself over its SSL inter-broker
+  listener. The e2e harness proves a certless SSL client is rejected and that the
+  read-only UI identity cannot produce. Still open: finer authorization,
+  SASL as an alternative mechanism, and the EXTERNAL listener now also needs a
+  client cert for host tools;
 - Postgres now terminates TLS and enforces it: the server presents a dev-CA PEM
   identity (SAN `postgres`/`localhost`), pg_hba rejects plaintext TCP, and the
   diagnostics worker connects with `SSL Mode=VerifyFull` as a non-superuser

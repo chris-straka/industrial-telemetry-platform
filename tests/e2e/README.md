@@ -27,8 +27,9 @@ checks these reliability seams:
 10. the sensor endpoint refuses readings without a device certificate, and a device
    certificate cannot speak for another equipment ID;
 11. Postgres serves TLS, rejects plaintext TCP, holds a worker SSL connection from a
-   non-superuser role; and
-12. the Kafka broker rejects an SSL client that presents no certificate.
+   non-superuser role;
+12. the Kafka broker rejects an SSL client that presents no certificate; and
+13. the Kafka authorizer denies a produce from the read-only UI identity.
 
 Docker with the Compose plugin must be running. The first run may take several minutes while it
 pulls base images and builds the .NET services. Set `E2E_SKIP_BUILD=1` to reuse previously built E2E

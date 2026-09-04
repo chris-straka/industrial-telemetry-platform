@@ -221,6 +221,22 @@ query_db() {
         | tr -d '[:space:]'
 }
 
+kafka_denies_unauthorized_produce() {
+    # The UI observer holds READ on telemetry-events but no WRITE. A produce with
+    # its identity must be denied: this proves the authorizer enforces the ACLs,
+    # not just the handshake. Match the tool output, not its exit code:
+    # console-producer exits 0 after logging per-message errors. Capture first
+    # and grep second: piping a live exec straight into `grep -q` lets grep's
+    # early exit SIGPIPE the producer, and pipefail turns that 141 into a false
+    # negative.
+    output="$(
+        compose exec -T kafka sh -c \
+            "sed 's/admin-client/ui-client/' /tls/client.properties > /tmp/e2e-ui.properties && printf 'e2e-unauthorized' | timeout 30 /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server kafka:9092 --producer.config /tmp/e2e-ui.properties --topic telemetry-events" \
+            2>&1 || true
+    )"
+    printf '%s' "$output" | grep -qi "authorization failed"
+}
+
 kafka_rejects_certless_client() {
     # An SSL client that trusts the broker but presents no certificate must fail:
     # the broker requires a dev-CA-chained client cert before any API call. The
@@ -356,6 +372,8 @@ wait_until 'Kafka topic initialization' "$STARTUP_TIMEOUT" kafka_init_succeeded
 # a cert-holding client works. This proves the other side: no cert, no API calls.
 wait_until 'Kafka broker rejects a certless SSL client' "$STARTUP_TIMEOUT" \
     kafka_rejects_certless_client
+wait_until 'Kafka broker denies an unauthorized produce' "$STARTUP_TIMEOUT" \
+    kafka_denies_unauthorized_produce
 
 log 'Starting ingestion, edge, and diagnostics'
 compose up --detach ingestion-api edge-gateway diagnostics-worker

@@ -50,10 +50,5 @@ services:
   kafka:
     ports: !reset []
 
-  kafka-init:
-    # Keep this self-contained even if the main Compose file has not yet added the DLQ topic.
-    command:
-      - |
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /tls/client.properties --create --if-not-exists --topic telemetry-events --partitions 6 --replication-factor 1
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /tls/client.properties --create --if-not-exists --topic telemetry-alerts --partitions 6 --replication-factor 1
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /tls/client.properties --create --if-not-exists --topic telemetry-events-dlq --partitions 6 --replication-factor 1
+  # kafka-init is deliberately not overridden: the base command owns topics and ACLs
+  # together, and splitting them would let this file silently drop authorization.

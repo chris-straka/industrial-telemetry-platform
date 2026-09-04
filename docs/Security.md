@@ -7,7 +7,7 @@ hop. It does not make the whole local platform a zero-trust deployment.
 | --- | --- | --- |
 | edge gateway -> ingestion gRPC | TLS plus required client certificate | development PKI; one simulated gateway identity |
 | sensor -> edge receiver | mutual TLS, one client certificate per simulated device bound to its equipment ID | development PKI; 12 simulated device identities |
-| applications -> Kafka | mutual TLS, one client certificate per workload plus admin/UI observer identities | no Kafka ACLs: identity is proven at the handshake, not authorization; development PKI |
+| applications -> Kafka | mutual TLS plus StandardAuthorizer ACLs: one client identity per workload, each with only its topics/groups/cluster operations; broker and topic-setup admin are superusers | development PKI and passwords; no per-record or per-key authorization |
 | diagnostics -> Postgres | server-side TLS with VerifyFull, non-superuser workload role, plaintext TCP rejected by pg_hba | development passwords in Compose config; worker still needs DDL for startup migrations |
 | applications -> OTel collector/backends | private Compose network | plaintext, unauthenticated OTLP/backend traffic |
 | dashboard/operator tools | host ports bound to `127.0.0.1` | local-only exposure is not application authentication |
@@ -79,7 +79,7 @@ cluster.
 # Production work still required
 
 A production design still needs a managed issuer and enrollment flow, renewal before expiry,
-auditable per-device revocation, workload identity for cloud services, Kafka authorization
-(ACLs) on top of the handshake identity, Postgres plaintext prohibition plus
-workload-specific credentials, protected telemetry backends and operator UIs, and secret
-rotation that does not require values in Terraform state. Those tasks remain in `TODO.md`.
+auditable per-device revocation, workload identity for cloud services, finer Kafka
+authorization (per-key/per-record rules, broker-config lockdown), protected telemetry
+backends and operator UIs, and secret rotation that does not require values in Terraform
+state. Those tasks remain in `TODO.md`.
