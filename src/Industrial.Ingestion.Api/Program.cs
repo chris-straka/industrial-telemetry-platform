@@ -65,6 +65,10 @@ var transportSecurity =
     builder.Configuration.GetSection(TransportSecurityOptions.Section)
         .Get<TransportSecurityOptions>() ?? new TransportSecurityOptions();
 
+// Assigned after the container builds (see below); the Kestrel handshake callback only
+// runs once the server starts, and a null here fails closed.
+ReloadingClientCertificatePolicy? reloadingPolicy = null;
+
 if (transportSecurity.Enabled)
 {
     var grpcEndpoint = builder.Configuration["Kestrel:Endpoints:Grpc:Url"];
@@ -75,17 +79,26 @@ if (transportSecurity.Enabled)
         );
     }
 
-    var clientCertificatePolicy = ClientCertificatePolicy.Load(
+    // Fail fast on unreadable trust material, exactly as before. The snapshot is then
+    // wrapped in a reloading policy so revoking a fingerprint is a file edit, not a restart.
+    var initialPolicy = ClientCertificatePolicy.Load(
         transportSecurity.TrustedClientCaPath,
         transportSecurity.AllowedClientFingerprintsPath
     );
-    builder.Services.AddSingleton(clientCertificatePolicy);
+    builder.Services.AddSingleton(sp => new ReloadingClientCertificatePolicy(
+        initialPolicy,
+        transportSecurity.TrustedClientCaPath,
+        transportSecurity.AllowedClientFingerprintsPath,
+        TimeSpan.FromSeconds(transportSecurity.AllowlistReloadIntervalSeconds),
+        sp.GetRequiredService<ILogger<ReloadingClientCertificatePolicy>>()
+    ));
+
     builder.WebHost.ConfigureKestrel(options =>
         options.ConfigureHttpsDefaults(https =>
         {
             https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
             https.ClientCertificateValidation = (certificate, _, _) =>
-                clientCertificatePolicy.IsAllowed(certificate);
+                reloadingPolicy?.IsAllowed(certificate) ?? false;
         })
     );
 }
@@ -166,6 +179,11 @@ builder
 builder.Services.AddGrpc();
 builder.Services.AddOpenApi();
 var app = builder.Build();
+
+// Start the reload timer now that logging exists. The Kestrel callback above already
+// closes over this variable, and the server (and its first handshake) starts after this.
+if (transportSecurity.Enabled)
+    reloadingPolicy = app.Services.GetRequiredService<ReloadingClientCertificatePolicy>();
 
 if (app.Environment.IsDevelopment())
 {

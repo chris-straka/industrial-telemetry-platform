@@ -28,6 +28,11 @@ public sealed class TransportSecurityOptions : IValidatableObject
 
     public string AllowedClientFingerprintsPath { get; set; } = string.Empty;
 
+    // How often ingestion re-reads the CA and allowlist files. Removing a gateway
+    // fingerprint revokes it within one interval, without a restart.
+    [Range(5, 3600)]
+    public int AllowlistReloadIntervalSeconds { get; set; } = 30;
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (!Enabled)

@@ -21,7 +21,9 @@ checks these reliability seams:
    cannot know whether the broker persisted the request) still delivers the alert at least
    once after the broker thaws, without duplicating any Postgres telemetry row. Every alert
    copy shares one `MessageId`, which is the key the dashboard dedupes on, so replays render
-   a single item.
+   a single item; and
+9. replacing the gateway allowlist with a non-matching fingerprint revokes uploads without
+   restarting ingestion (the gateway retains its row), and restoring the file drains it.
 
 Docker with the Compose plugin must be running. The first run may take several minutes while it
 pulls base images and builds the .NET services. Set `E2E_SKIP_BUILD=1` to reuse previously built E2E

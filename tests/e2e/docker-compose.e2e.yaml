@@ -6,6 +6,8 @@ services:
     ports: !reset []
     environment:
       Kafka__ReadinessTimeoutSeconds: "3"
+      # Fast trust reload so the revocation phase does not wait on the 30s default.
+      TransportSecurity__AllowlistReloadIntervalSeconds: "5"
 
   edge-gateway:
     image: industrialplatform-e2e-edge-gateway

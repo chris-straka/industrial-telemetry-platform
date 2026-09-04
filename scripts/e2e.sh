@@ -277,6 +277,22 @@ outbox_failed_then_pending() {
     [ "$attempts" -ge 1 ] && ! outbox_is_published "$message_id"
 }
 
+tls_volume_name() {
+    printf '%s_ingestion_tls_data' "$E2E_PROJECT_NAME"
+}
+
+read_gateway_allowlist() {
+    # Ingestion mounts its TLS volume read-only, so the allowlist is edited through
+    # a transient helper container holding the same named volume read-write.
+    docker run --rm --volume "$(tls_volume_name):/tls:ro" alpine:3.23 \
+        cat /tls/allowed-client-sha256.txt
+}
+
+write_gateway_allowlist() {
+    docker run --rm --interactive --volume "$(tls_volume_name):/tls" alpine:3.23 \
+        sh -c 'cat > /tls/allowed-client-sha256.txt'
+}
+
 
 log "Validating isolated Compose model"
 compose config --quiet
@@ -464,5 +480,38 @@ wait_until 'earlier telemetry rows to remain exactly once after the ambiguous pu
 wait_until 'rewound telemetry row to remain exactly once after the ambiguous publish' 60 \
     database_has_unique_ids 1 "'$MESSAGE_ID_4'::uuid"
 
+log 'Revoking the gateway certificate without restarting ingestion'
+REVOKE_MESSAGE_ID='aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'
+ALLOWLIST_BACKUP="$(read_gateway_allowlist)" || fail 'could not read the gateway allowlist'
+if [ -z "$ALLOWLIST_BACKUP" ]; then
+    fail 'gateway allowlist is empty; nothing to revoke'
+fi
+# 64 hex zeros: well-formed, so the reload applies it, and it matches no gateway.
+printf '0000000000000000000000000000000000000000000000000000000000000000\n' \
+    | write_gateway_allowlist || fail 'could not revoke the gateway allowlist'
+# Let ingestion reload before the gateway's next handshake; otherwise the first
+# post-revocation attempt could still race the old snapshot on a warm lookup.
+sleep 8
+# Fresh TLS handshake as the now-revoked identity. The gateway itself restarts;
+# ingestion does not. Its SQLite queue must survive this restart too.
+compose restart --timeout 10 edge-gateway
+wait_for_container_health edge-gateway "$STARTUP_TIMEOUT"
+post_edge_reading "$REVOKE_MESSAGE_ID" 5
+# Longer than the 5s e2e reload interval: the row must still be queued because
+# every upload handshake is now refused, and refused is neither accepted nor
+# rejected, so the gateway retains it.
+sleep 20
+if [ "$(edge_queue_depth)" != '1' ]; then
+    fail 'revoked gateway upload left the edge queue (expected exactly the 1 retained row)'
+fi
+printf 'Revoked gateway retained its reading instead of uploading it.\n'
+
+log 'Restoring the allowlist and checking the retained row drains without a restart'
+printf '%s\n' "$ALLOWLIST_BACKUP" \
+    | write_gateway_allowlist || fail 'could not restore the gateway allowlist'
+wait_until 'edge queue to drain after allowlist restore' 60 edge_queue_is 0
+wait_until 'revoked-then-restored reading to persist exactly once' 60 \
+    database_has_unique_ids 1 "'$REVOKE_MESSAGE_ID'::uuid"
+
 log 'All failure/recovery assertions passed'
-printf 'Verified 4 telemetry MessageIds, one DLQ record, one recovered outbox publish, and one ambiguous-ACK outbox recovery.\n'
+printf 'Verified 5 telemetry MessageIds, one DLQ record, one recovered outbox publish, one ambiguous-ACK outbox recovery, and one restart-free gateway revocation.\n'

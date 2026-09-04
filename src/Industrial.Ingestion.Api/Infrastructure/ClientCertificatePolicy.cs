@@ -6,7 +6,8 @@ namespace Industrial.Ingestion.Api.Infrastructure;
 
 /// <summary>
 /// Validates a gateway certificate against the private CA and an explicit SHA-256 allowlist.
-/// Removing one fingerprint and restarting ingestion revokes that gateway without affecting its
+/// One immutable snapshot; <see cref="ReloadingClientCertificatePolicy"/> swaps snapshots so
+/// removing a fingerprint revokes that gateway without restarting ingestion or affecting its
 /// peers. A production issuer can replace the file with a dynamically managed trust policy.
 /// </summary>
 public sealed class ClientCertificatePolicy : IDisposable

@@ -32,7 +32,10 @@ Remaining work:
 - protect observability ingestion and operator UIs;
 - replace the development CA bootstrap with managed enrollment, renewal, rotation, revocation, and
   audit; and
-- decide whether the gateway allowlist should reload without restarting ingestion.
+- the gateway allowlist now reloads on a timer (`TransportSecurity:AllowlistReloadIntervalSeconds`,
+  30s by default, 5s in the e2e project), so removing a fingerprint revokes that gateway
+  without restarting ingestion; a malformed edit keeps the previous snapshot. Proven by unit
+  tests (revocation, invalid-edit safety, CA rotation) and an e2e revocation drill.
 
 ## 3. Prove or remove the production deployment prototype
 
