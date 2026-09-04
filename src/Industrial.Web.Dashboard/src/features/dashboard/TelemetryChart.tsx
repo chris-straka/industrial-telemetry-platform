@@ -17,6 +17,10 @@ export function TelemetryChart({ data }: Props) {
     byEquipment.set(reading.EquipmentId, points)
   }
 
+  if (data.length === 0) {
+    return <p className="empty">Waiting for telemetry…</p>
+  }
+
   return (
     <Chart>
       <Title>Live Engine Temperatures</Title>

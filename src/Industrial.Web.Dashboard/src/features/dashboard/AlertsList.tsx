@@ -16,13 +16,21 @@ export function AlertsList({ alerts }: Props) {
         </tr>
       </thead>
       <tbody>
-        {alerts.map((alert) => (
-          <tr key={alert.MessageId}>
-            <td>{new Date(alert.OccurredAt).toLocaleTimeString()}</td>
-            <td>{alert.EquipmentId}</td>
-            <td>{alert.Diagnostics}</td>
+        {alerts.length === 0 ? (
+          <tr>
+            <td colSpan={3} className="empty">
+              No alerts yet.
+            </td>
           </tr>
-        ))}
+        ) : (
+          alerts.map((alert) => (
+            <tr key={alert.MessageId}>
+              <td>{new Date(alert.OccurredAt).toLocaleTimeString()}</td>
+              <td>{alert.EquipmentId}</td>
+              <td>{alert.Diagnostics}</td>
+            </tr>
+          ))
+        )}
       </tbody>
     </table>
   )

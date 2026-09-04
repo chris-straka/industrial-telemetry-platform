@@ -2,17 +2,22 @@ import { useEffect, useRef } from 'react'
 import { HubConnectionBuilder, HttpTransportType, LogLevel } from '@microsoft/signalr'
 import type { TelemetryEvent, TelemetryAlert } from '../types/telemetry'
 
+export type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting'
+
 export function useTelemetry(
     onEvent?: (data: TelemetryEvent) => void,
     onAlert?: (data: TelemetryAlert) => void,
+    onStatus?: (status: ConnectionStatus) => void,
 ) {
     const eventRef = useRef(onEvent)
     const alertRef = useRef(onAlert)
+    const statusRef = useRef(onStatus)
 
     // Update box every render so SignalR listener always pulls latest callbacks
     useEffect(() => {
         eventRef.current = onEvent
         alertRef.current = onAlert
+        statusRef.current = onStatus
     })
 
     useEffect(() => {
@@ -48,12 +53,31 @@ export function useTelemetry(
             if (parsed) alertRef.current?.(parsed)
         })
 
+        connection.onreconnecting(() => {
+            statusRef.current?.('reconnecting')
+        })
+
+        connection.onreconnected(() => {
+            statusRef.current?.('connected')
+        })
+
+        // With an unbounded retry policy onclose only fires on stop(), but a closed
+        // connection that nobody stopped means the retry state machine died: report
+        // it and restart the loop rather than freezing on a dead socket.
+        connection.onclose(() => {
+            if (disposed) return
+            statusRef.current?.('connecting')
+            void start()
+        })
+
         // Automatic reconnect starts only after one successful connection. This loop covers the
         // common Compose race where the browser loads before Web.Api has finished starting.
         const start = async () => {
+            statusRef.current?.('connecting')
             try {
                 await connection.start()
                 retryDelayMs = 1_000
+                statusRef.current?.('connected')
             } catch (error) {
                 if (disposed) return
                 console.error('SignalR initial connection failed; retrying', error)
@@ -86,7 +110,9 @@ function parse<T>(payload: string, isExpected: (value: unknown) => value is T): 
     }
 }
 
-function isTelemetryEvent(value: unknown): value is TelemetryEvent {
+// Exported for unit tests: the dashboard is the last dedupe and validation boundary,
+// so its shape guards are a contract, not an implementation detail.
+export function isTelemetryEvent(value: unknown): value is TelemetryEvent {
     if (!isRecord(value)) return false
     return hasIdentityAndEventTime(value)
         && isFiniteNumber(value.SequenceNumber)
@@ -98,7 +124,7 @@ function isTelemetryEvent(value: unknown): value is TelemetryEvent {
         && isFiniteNumber(value.OilPressure)
 }
 
-function isTelemetryAlert(value: unknown): value is TelemetryAlert {
+export function isTelemetryAlert(value: unknown): value is TelemetryAlert {
     if (!isRecord(value)) return false
     return hasIdentityAndEventTime(value)
         && isFiniteNumber(value.EngineTemperature)
