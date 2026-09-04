@@ -10,12 +10,16 @@ public class KafkaOptions : IValidatableObject
     [Required(AllowEmptyStrings = false)]
     public string BootstrapServers { get; set; } = string.Empty;
 
-    // Server-only TLS (no client certificate): the broker proves its identity via the
-    // dev CA. Hostname verification stays on, so the broker certificate needs a SAN
-    // for every advertised listener the clients use.
+    // Mutual TLS: the broker proves its identity via the dev CA (hostname
+    // verification stays on), and this workload presents its own client certificate.
+    // The broker requires a dev-CA-chained client cert before any API call.
     public bool UseTls { get; set; }
 
     public string SslCaLocation { get; set; } = string.Empty;
+
+    public string SslCertificateLocation { get; set; } = string.Empty;
+
+    public string SslKeyLocation { get; set; } = string.Empty;
 
     [Required(AllowEmptyStrings = false)]
     [RegularExpression("^[A-Za-z0-9._-]{1,249}$")]
@@ -31,6 +35,22 @@ public class KafkaOptions : IValidatableObject
             yield return new ValidationResult(
                 "Kafka:SslCaLocation is required when Kafka TLS is enabled.",
                 [nameof(SslCaLocation)]
+            );
+        }
+
+        if (UseTls && string.IsNullOrWhiteSpace(SslCertificateLocation))
+        {
+            yield return new ValidationResult(
+                "Kafka:SslCertificateLocation is required when Kafka TLS is enabled.",
+                [nameof(SslCertificateLocation)]
+            );
+        }
+
+        if (UseTls && string.IsNullOrWhiteSpace(SslKeyLocation))
+        {
+            yield return new ValidationResult(
+                "Kafka:SslKeyLocation is required when Kafka TLS is enabled.",
+                [nameof(SslKeyLocation)]
             );
         }
     }

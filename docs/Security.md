@@ -7,7 +7,7 @@ hop. It does not make the whole local platform a zero-trust deployment.
 | --- | --- | --- |
 | edge gateway -> ingestion gRPC | TLS plus required client certificate | development PKI; one simulated gateway identity |
 | sensor -> edge receiver | mutual TLS, one client certificate per simulated device bound to its equipment ID | development PKI; 12 simulated device identities |
-| applications -> Kafka | server-side TLS, clients verify the broker against the dev CA | no client authentication (no mTLS/SASL); development PKI |
+| applications -> Kafka | mutual TLS, one client certificate per workload plus admin/UI observer identities | no Kafka ACLs: identity is proven at the handshake, not authorization; development PKI |
 | diagnostics -> Postgres | server-side TLS, worker connects with VerifyFull against the dev CA | plaintext still permitted by pg_hba for host EF tooling; development credential |
 | applications -> OTel collector/backends | private Compose network | plaintext, unauthenticated OTLP/backend traffic |
 | dashboard/operator tools | host ports bound to `127.0.0.1` | local-only exposure is not application authentication |
@@ -27,8 +27,11 @@ and Kafka services start. It creates separately mounted named volumes:
   certificate;
 - a sensor volume containing one client PFX per simulated device plus the public CA
   certificate;
-- a Kafka volume containing the broker server PKCS12, public CA certificate, and JVM client
-  properties; and
+- a Kafka volume containing the broker server PKCS12, public CA certificate, JVM client
+  properties, and the admin/UI observer client PKCS12 stores;
+- a Kafka-clients volume containing one PEM client cert/key pair per .NET workload
+  (ingestion, diagnostics, web-api), mounted into those containers but never into the
+  broker; and
 - a Postgres volume containing the database server certificate and private key in PEM form,
   mounted only into the database container.
 
@@ -76,7 +79,7 @@ cluster.
 # Production work still required
 
 A production design still needs a managed issuer and enrollment flow, renewal before expiry,
-auditable per-device revocation, workload identity for cloud services, Kafka client
-authentication, Postgres plaintext prohibition plus workload-specific credentials, protected
-telemetry backends and operator UIs, and secret rotation that does not require values in
-Terraform state. Those tasks remain in `TODO.md`.
+auditable per-device revocation, workload identity for cloud services, Kafka authorization
+(ACLs) on top of the handshake identity, Postgres plaintext prohibition plus
+workload-specific credentials, protected telemetry backends and operator UIs, and secret
+rotation that does not require values in Terraform state. Those tasks remain in `TODO.md`.

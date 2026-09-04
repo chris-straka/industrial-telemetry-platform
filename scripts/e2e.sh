@@ -221,6 +221,19 @@ query_db() {
         | tr -d '[:space:]'
 }
 
+kafka_rejects_certless_client() {
+    # An SSL client that trusts the broker but presents no certificate must fail:
+    # the broker requires a dev-CA-chained client cert before any API call. The
+    # config is derived from client.properties minus its keystore lines so the
+    # trust password never appears in this script.
+    if compose exec -T kafka sh -c \
+        "grep -v -e '^ssl.keystore' -e '^ssl.key\\.password' /tls/client.properties > /tmp/e2e-no-cert.properties && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /tmp/e2e-no-cert.properties --list" \
+        >/dev/null 2>&1; then
+        return 1
+    fi
+    return 0
+}
+
 postgres_ssl_enabled() {
     [ "$(query_db 'SHOW ssl;' 2>/dev/null || true)" = 'on' ]
 }
@@ -325,6 +338,10 @@ wait_until 'Postgres TLS listener' "$STARTUP_TIMEOUT" postgres_ssl_enabled
 wait_for_container_health kafka "$STARTUP_TIMEOUT"
 # kafka-init has no healthcheck; its successful one-shot state is exited with status zero.
 wait_until 'Kafka topic initialization' "$STARTUP_TIMEOUT" kafka_init_succeeded
+# kafka-init authenticates with a client certificate, so its success already proves
+# a cert-holding client works. This proves the other side: no cert, no API calls.
+wait_until 'Kafka broker rejects a certless SSL client' "$STARTUP_TIMEOUT" \
+    kafka_rejects_certless_client
 
 log 'Starting ingestion, edge, and diagnostics'
 compose up --detach ingestion-api edge-gateway diagnostics-worker

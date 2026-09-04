@@ -97,6 +97,8 @@ builder.Services.AddSingleton(sp =>
         BootstrapServers = kafka.BootstrapServers,
         SecurityProtocol = kafka.UseTls ? SecurityProtocol.Ssl : SecurityProtocol.Plaintext,
         SslCaLocation = kafka.UseTls ? kafka.SslCaLocation : null,
+        SslCertificateLocation = kafka.UseTls ? kafka.SslCertificateLocation : null,
+        SslKeyLocation = kafka.UseTls ? kafka.SslKeyLocation : null,
         Acks = Acks.All,
         EnableIdempotence = true,
         MessageTimeoutMs = 20_000,
@@ -116,6 +118,8 @@ builder.Services.AddSingleton<IAdminClient>(
             BootstrapServers = kafka.BootstrapServers,
             SecurityProtocol = kafka.UseTls ? SecurityProtocol.Ssl : SecurityProtocol.Plaintext,
             SslCaLocation = kafka.UseTls ? kafka.SslCaLocation : null,
+            SslCertificateLocation = kafka.UseTls ? kafka.SslCertificateLocation : null,
+            SslKeyLocation = kafka.UseTls ? kafka.SslKeyLocation : null,
             AllowAutoCreateTopics = false,
         }
     ).Build()

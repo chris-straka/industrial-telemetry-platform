@@ -143,6 +143,8 @@ builder.Services.AddSingleton(sp => // service provider
         // list must cover every advertised listener the clients use.
         SecurityProtocol = kafka.UseTls ? SecurityProtocol.Ssl : SecurityProtocol.Plaintext,
         SslCaLocation = kafka.UseTls ? kafka.SslCaLocation : null,
+        SslCertificateLocation = kafka.UseTls ? kafka.SslCertificateLocation : null,
+        SslKeyLocation = kafka.UseTls ? kafka.SslKeyLocation : null,
         Acks = Acks.All,
         EnableIdempotence = true,
         LingerMs = 20,
@@ -170,6 +172,8 @@ builder.Services.AddSingleton<IAdminClient>(sp =>
             BootstrapServers = options.BootstrapServers,
             SecurityProtocol = options.UseTls ? SecurityProtocol.Ssl : SecurityProtocol.Plaintext,
             SslCaLocation = options.UseTls ? options.SslCaLocation : null,
+            SslCertificateLocation = options.UseTls ? options.SslCertificateLocation : null,
+            SslKeyLocation = options.UseTls ? options.SslKeyLocation : null,
             AllowAutoCreateTopics = false,
         }
     ).Build();

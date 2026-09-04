@@ -126,8 +126,9 @@ For an automated destructive test that does not touch the normal development pro
 ```
 
 The isolated Compose harness verifies an ingestion outage plus gateway restart, Postgres consumer
-retry, malformed-record DLQ handling, alert-outbox recovery after a Kafka outage, and rejection of
-a TLS client that does not present the gateway certificate. It uses a unique Compose project and
+retry, malformed-record DLQ handling, alert-outbox recovery after a Kafka outage, rejection of
+a TLS client that does not present the gateway certificate, Postgres TLS with a worker SSL
+connection, and Kafka broker rejection of a certless SSL client. It uses a unique Compose project and
 volumes on every run.
 
 # Health and local transport security
@@ -145,9 +146,10 @@ checks its SHA-256 fingerprint against an allowlist. Identities survive ordinary
 `docker compose down -v` intentionally destroys and regenerates this local PKI.
 
 Sensor-to-edge traffic uses mutual TLS with per-device certificates, and the Kafka and
-Postgres listeners terminate server-side TLS verified against the development CA. Kafka has no
-client authentication yet, Postgres still permits plaintext for host tooling, and observability
-traffic remains plaintext and unauthenticated inside the Compose network. See
+Postgres listeners terminate TLS verified against the development CA: Kafka requires a
+per-workload client certificate, and the diagnostics worker connects to Postgres with
+VerifyFull. Kafka has no ACLs yet, Postgres still permits plaintext for host tooling, and
+observability traffic remains plaintext and unauthenticated inside the Compose network. See
 [Security](docs/Security.md) for the exact boundary and remaining work.
 
 # Install

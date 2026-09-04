@@ -30,10 +30,15 @@ Remaining work:
   simulated device (CN=EQ-N), each emulator replica loads only its shard over per-device
   HttpClient chains, and the gateway binds the certificate subject to the claimed equipment
   ID (403 otherwise). Proven by unit tests, a live TLS round trip, and e2e identity checks.
-- Kafka client listeners now terminate TLS: the broker presents a dev-CA server
-  certificate, .NET clients verify it via SslCaLocation, JVM tools use a keytool-built
-  truststore, and kafka-ui connects over SSL. Still open: client-certificate auth
-  (SASL or mTLS) instead of server-only TLS;
+- Kafka client listeners now require mutual TLS: the broker presents a dev-CA server
+  certificate and rejects clients without a dev-CA-chained certificate. Each .NET
+  workload (ingestion, diagnostics, web-api) presents its own PEM identity, the topic
+  setup and kafka-ui use password-protected observer PKCS12 stores, and the broker
+  certificate carries clientAuth so the combined node can still talk to itself over
+  its SSL inter-broker listener. The e2e harness proves a certless SSL client is
+  rejected. Still open: Kafka ACLs (identity without authorization), SASL as an
+  alternative mechanism, and the EXTERNAL listener now also needs a client cert for
+  host tools;
 - Postgres now terminates TLS: the server presents a dev-CA PEM identity (SAN
   `postgres`/`localhost`) and the diagnostics worker connects with
   `SSL Mode=VerifyFull` against the CA it already mounts for Kafka. The server key

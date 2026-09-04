@@ -15,6 +15,7 @@ services:
       - edge_gateway_tls_data:/edge
       - sensor_tls_data:/sensors
       - kafka_tls_data:/kafka
+      - kafka_clients_tls_data:/kafka-clients
       - postgres_tls_data:/postgres
 
   web-dashboard:
@@ -40,6 +41,7 @@ services:
       dockerfile: src/Industrial.Web.Api/Dockerfile
     volumes:
       - kafka_tls_data:/kafka-tls:ro
+      - kafka_clients_tls_data:/kafka-clients:ro
     ports:
       - "127.0.0.1:5090:8080"
     environment:
@@ -47,6 +49,8 @@ services:
       - Kafka__BootstrapServers=kafka:9092
       - Kafka__UseTls=true
       - Kafka__SslCaLocation=/kafka-tls/ca.crt
+      - Kafka__SslCertificateLocation=/kafka-clients/webapi-client.crt
+      - Kafka__SslKeyLocation=/kafka-clients/webapi-client.key
       - Kafka__GroupId=web-api-dashboard-group
       - Kafka__EventsTopic=telemetry-events
       - Kafka__AlertsTopic=telemetry-alerts
@@ -76,11 +80,14 @@ services:
     volumes:
       - ingestion_tls_data:/tls:ro
       - kafka_tls_data:/kafka-tls:ro
+      - kafka_clients_tls_data:/kafka-clients:ro
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - Kafka__BootstrapServers=kafka:9092
       - Kafka__UseTls=true
       - Kafka__SslCaLocation=/kafka-tls/ca.crt
+      - Kafka__SslCertificateLocation=/kafka-clients/ingestion-client.crt
+      - Kafka__SslKeyLocation=/kafka-clients/ingestion-client.key
       - Kafka__EventsTopic=telemetry-events
       - Kafka__ReadinessTimeoutSeconds=3
       - Kestrel__Endpoints__Grpc__Url=https://+:8081
@@ -185,6 +192,8 @@ services:
       - Kafka__BootstrapServers=kafka:9092
       - Kafka__UseTls=true
       - Kafka__SslCaLocation=/kafka-tls/ca.crt
+      - Kafka__SslCertificateLocation=/kafka-clients/diagnostics-client.crt
+      - Kafka__SslKeyLocation=/kafka-clients/diagnostics-client.key
       - Kafka__GroupId=diagnostics-group
       - Kafka__EventsTopic=telemetry-events
       - Kafka__AlertsTopic=telemetry-alerts
@@ -194,6 +203,7 @@ services:
       - OTel__Endpoint=http://otel-collector:4317
     volumes:
       - kafka_tls_data:/kafka-tls:ro
+      - kafka_clients_tls_data:/kafka-clients:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -277,21 +287,22 @@ services:
       - postgres_data:/var/lib/postgresql
       - postgres_tls_data:/postgres-tls:ro
     # The server key must be 0600 and owned by postgres, but the PKI volume is
-    # root-owned and read-only. Copy it into PGDATA on every start (so rotation
-    # applies on restart) before the stock entrypoint runs initdb/startup.
+    # root-owned and read-only. Stage the pair in a tls/ sibling of PGDATA on every
+    # start (so rotation applies on restart): PGDATA itself must stay empty until
+    # the stock entrypoint runs initdb.
     entrypoint:
       - /bin/sh
       - -c
       - |
-        mkdir -p "$$PGDATA" && \
-        cp /postgres-tls/server.crt "$$PGDATA/server.crt" && \
-        cp /postgres-tls/server.key "$$PGDATA/server.key" && \
-        chmod 0600 "$$PGDATA/server.key" && \
-        chown postgres:postgres "$$PGDATA/server.crt" "$$PGDATA/server.key" && \
+        mkdir -p /var/lib/postgresql/tls && \
+        cp /postgres-tls/server.crt /var/lib/postgresql/tls/server.crt && \
+        cp /postgres-tls/server.key /var/lib/postgresql/tls/server.key && \
+        chmod 0600 /var/lib/postgresql/tls/server.key && \
+        chown -R postgres:postgres /var/lib/postgresql/tls && \
         exec docker-entrypoint.sh postgres \
           -c ssl=on \
-          -c ssl_cert_file="$$PGDATA/server.crt" \
-          -c ssl_key_file="$$PGDATA/server.key"
+          -c ssl_cert_file=/var/lib/postgresql/tls/server.crt \
+          -c ssl_key_file=/var/lib/postgresql/tls/server.key
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: password
@@ -354,6 +365,10 @@ services:
       KAFKA_SSL_TRUSTSTORE_LOCATION: /tls/ca.p12
       KAFKA_SSL_TRUSTSTORE_PASSWORD: changeit
       KAFKA_SSL_TRUSTSTORE_TYPE: PKCS12
+      # Client listeners require a certificate chained to the dev CA. There are no
+      # Kafka ACLs, so this proves identity at the handshake, not authorization:
+      # a client without a cert is rejected before any API call.
+      KAFKA_SSL_CLIENT_AUTH: required
       # Kafka's own Docker examples use this base64 UUID form for a stable KRaft cluster ID.
       CLUSTER_ID: abcdefghijklmnopqrstuv
       # Keep the previous Bitnami volume layout (`data/`) so changing images does not discard
@@ -429,12 +444,14 @@ services:
     environment:
       - KAFKA_CLUSTERS_0_NAME=local
       - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
-      # The UI is a read-only observer here: it verifies the broker identity but
-      # presents no client certificate.
+      # The UI is a read-only observer here with its own client identity.
       - KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL=SSL
       - KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_LOCATION=/tls/ca.p12
       - KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_PASSWORD=changeit
       - KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_TYPE=PKCS12
+      - KAFKA_CLUSTERS_0_PROPERTIES_SSL_KEYSTORE_LOCATION=/tls/ui-client.p12
+      - KAFKA_CLUSTERS_0_PROPERTIES_SSL_KEYSTORE_PASSWORD=changeit
+      - KAFKA_CLUSTERS_0_PROPERTIES_SSL_KEY_PASSWORD=changeit
     depends_on:
       kafka:
         condition: service_healthy
@@ -571,6 +588,7 @@ volumes:
   alertmanager_data:
   sensor_tls_data:
   kafka_tls_data:
+  kafka_clients_tls_data:
   postgres_tls_data:
   dev_pki_authority_data:
   ingestion_tls_data:

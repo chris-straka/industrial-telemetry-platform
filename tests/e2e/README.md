@@ -25,7 +25,9 @@ checks these reliability seams:
 9. replacing the gateway allowlist with a non-matching fingerprint revokes uploads without
    restarting ingestion (the gateway retains its row), and restoring the file drains it;
 10. the sensor endpoint refuses readings without a device certificate, and a device
-   certificate cannot speak for another equipment ID.
+   certificate cannot speak for another equipment ID;
+11. Postgres serves TLS and the diagnostics worker holds an SSL connection; and
+12. the Kafka broker rejects an SSL client that presents no certificate.
 
 Docker with the Compose plugin must be running. The first run may take several minutes while it
 pulls base images and builds the .NET services. Set `E2E_SKIP_BUILD=1` to reuse previously built E2E

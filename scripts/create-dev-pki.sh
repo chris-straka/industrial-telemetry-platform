@@ -9,12 +9,15 @@ SENSOR_TLS_DIR=${SENSOR_TLS_DIR:-/sensors}
 # Three emulator replicas of four devices each: EQ-0 through EQ-11.
 SENSOR_DEVICE_COUNT=${SENSOR_DEVICE_COUNT:-12}
 KAFKA_TLS_DIR=${KAFKA_TLS_DIR:-/kafka}
+# Workload client identities live apart from the broker volume so the broker
+# container never sees a client private key.
+KAFKA_CLIENTS_DIR=${KAFKA_CLIENTS_DIR:-/kafka-clients}
 POSTGRES_TLS_DIR=${POSTGRES_TLS_DIR:-/postgres}
 # Development-only keystore password, same class of placeholder as the Compose
 # Postgres password. Production uses a managed secret, never a baked-in literal.
 KAFKA_TLS_PASSWORD=${KAFKA_TLS_PASSWORD:-changeit}
 
-mkdir -p "$AUTHORITY_DIR" "$INGESTION_TLS_DIR" "$EDGE_TLS_DIR" "$SENSOR_TLS_DIR" "$KAFKA_TLS_DIR" "$POSTGRES_TLS_DIR"
+mkdir -p "$AUTHORITY_DIR" "$INGESTION_TLS_DIR" "$EDGE_TLS_DIR" "$SENSOR_TLS_DIR" "$KAFKA_TLS_DIR" "$KAFKA_CLIENTS_DIR" "$POSTGRES_TLS_DIR"
 umask 077
 
 if ! openssl x509 -in "$AUTHORITY_DIR/ca.crt" -checkend 604800 -noout >/dev/null 2>&1 \
@@ -182,24 +185,90 @@ fi
 # Kafka brokers terminate client TLS. One server identity (SAN: kafka for the Compose
 # network, localhost for host tools) plus a CA-only truststore and a static client
 # properties file for the JVM tools (kafka-topics, console producer/consumer).
-if ! pfx_is_current "$KAFKA_TLS_DIR/kafka-server.p12" sslserver "$KAFKA_TLS_PASSWORD"; then
+# issue_certificate mints empty-password stores; re-wrap with the Kafka password
+# so the broker, the JVM tools, and the freshness checks share one credential.
+rewrap_p12_with_password() {
+    rewrap_path=$1
+    openssl pkcs12 -in "$rewrap_path" -passin pass: -nodes \
+        -out "$work_dir/rewrap.pem" 2>/dev/null
+    openssl pkcs12 -export \
+        -in "$work_dir/rewrap.pem" \
+        -passout "pass:$KAFKA_TLS_PASSWORD" \
+        -out "$rewrap_path.tmp" 2>/dev/null
+    mv "$rewrap_path.tmp" "$rewrap_path"
+}
+
+# The combined single-node broker also connects to itself over the SSL
+# inter-broker listener, so its certificate carries clientAuth alongside
+# serverAuth. Per-workload client certificates below stay clientAuth-only.
+# Certificates minted before clientAuth was added are still valid but lack that
+# usage, so reissue them rather than keeping a broker that cannot talk to itself.
+server_p12_allows_client_auth() {
+    openssl pkcs12 -in "$KAFKA_TLS_DIR/kafka-server.p12" \
+        -passin "pass:$KAFKA_TLS_PASSWORD" -clcerts -nokeys 2>/dev/null \
+        | openssl x509 -noout -text 2>/dev/null \
+        | grep -q 'TLS Web Client Authentication'
+}
+
+if ! pfx_is_current "$KAFKA_TLS_DIR/kafka-server.p12" sslserver "$KAFKA_TLS_PASSWORD" \
+    || ! server_p12_allows_client_auth; then
     issue_certificate \
         kafka-server \
         kafka \
-        serverAuth \
+        serverAuth,clientAuth \
         'DNS:kafka,DNS:localhost' \
         "$KAFKA_TLS_DIR" \
         kafka-server.p12
-    # issue_certificate mints empty-password stores; re-wrap with the Kafka password
-    # so the broker and the freshness check above share one credential.
-    openssl pkcs12 -in "$KAFKA_TLS_DIR/kafka-server.p12" -passin pass: -nodes \
-        -out "$work_dir/kafka-server.pem" 2>/dev/null
-    openssl pkcs12 -export \
-        -in "$work_dir/kafka-server.pem" \
-        -passout "pass:$KAFKA_TLS_PASSWORD" \
-        -out "$KAFKA_TLS_DIR/kafka-server.p12.tmp" 2>/dev/null
-    mv "$KAFKA_TLS_DIR/kafka-server.p12.tmp" "$KAFKA_TLS_DIR/kafka-server.p12"
+    rewrap_p12_with_password "$KAFKA_TLS_DIR/kafka-server.p12"
 fi
+
+# One client identity per Kafka workload (plus admin and UI observers for the JVM
+# tools). librdkafka reads PEM, so the .NET workloads get cert/key pairs; the JVM
+# tools get password-protected PKCS12 stores.
+for kafka_client in ingestion diagnostics webapi; do
+    if ! pem_is_current "$KAFKA_CLIENTS_DIR/$kafka_client-client.crt" sslclient; then
+        openssl genrsa -out "$work_dir/kafka-$kafka_client-client.key" 3072
+        openssl req -new -sha256 \
+            -key "$work_dir/kafka-$kafka_client-client.key" \
+            -subj "/CN=kafka-client-$kafka_client" \
+            -out "$work_dir/kafka-$kafka_client-client.csr"
+        {
+            printf '%s\n' 'basicConstraints=critical,CA:FALSE'
+            printf '%s\n' 'keyUsage=critical,digitalSignature,keyEncipherment'
+            printf '%s\n' 'extendedKeyUsage=clientAuth'
+            printf 'subjectAltName=%s\n' "URI:spiffe://industrial-platform/kafka-client/$kafka_client"
+        } > "$work_dir/kafka-$kafka_client-client.ext"
+        openssl x509 -req -sha256 \
+            -in "$work_dir/kafka-$kafka_client-client.csr" \
+            -CA "$AUTHORITY_DIR/ca.crt" \
+            -CAkey "$AUTHORITY_DIR/ca.key" \
+            -CAcreateserial \
+            -days 825 \
+            -extfile "$work_dir/kafka-$kafka_client-client.ext" \
+            -out "$work_dir/kafka-$kafka_client-client.crt"
+        cp "$work_dir/kafka-$kafka_client-client.key" \
+            "$KAFKA_CLIENTS_DIR/$kafka_client-client.key.tmp"
+        mv "$KAFKA_CLIENTS_DIR/$kafka_client-client.key.tmp" \
+            "$KAFKA_CLIENTS_DIR/$kafka_client-client.key"
+        cp "$work_dir/kafka-$kafka_client-client.crt" \
+            "$KAFKA_CLIENTS_DIR/$kafka_client-client.crt.tmp"
+        mv "$KAFKA_CLIENTS_DIR/$kafka_client-client.crt.tmp" \
+            "$KAFKA_CLIENTS_DIR/$kafka_client-client.crt"
+    fi
+done
+
+for kafka_jvm_client in admin ui; do
+    if ! pfx_is_current "$KAFKA_TLS_DIR/$kafka_jvm_client-client.p12" sslclient "$KAFKA_TLS_PASSWORD"; then
+        issue_certificate \
+            "kafka-$kafka_jvm_client-client" \
+            "kafka-client-$kafka_jvm_client" \
+            clientAuth \
+            "URI:spiffe://industrial-platform/kafka-client/$kafka_jvm_client" \
+            "$KAFKA_TLS_DIR" \
+            "$kafka_jvm_client-client.p12"
+        rewrap_p12_with_password "$KAFKA_TLS_DIR/$kafka_jvm_client-client.p12"
+    fi
+done
 # PEM CA for librdkafka clients (SslCaLocation). The JVM truststore (ca.p12) is built
 # by kafka-truststore-init with keytool: openssl's PKCS12 cert bags load as zero
 # entries in a Java truststore, so openssl cannot mint that file.
@@ -210,6 +279,9 @@ security.protocol=SSL
 ssl.truststore.location=/tls/ca.p12
 ssl.truststore.password=$KAFKA_TLS_PASSWORD
 ssl.truststore.type=PKCS12
+ssl.keystore.location=/tls/admin-client.p12
+ssl.keystore.password=$KAFKA_TLS_PASSWORD
+ssl.key.password=$KAFKA_TLS_PASSWORD
 EOF
 mv "$KAFKA_TLS_DIR/client.properties.tmp" "$KAFKA_TLS_DIR/client.properties"
 
@@ -238,5 +310,16 @@ chmod 0444 \
     "$KAFKA_TLS_DIR/kafka-server.p12" \
     "$KAFKA_TLS_DIR/ca.crt" \
     "$KAFKA_TLS_DIR/client.properties" \
+    "$KAFKA_TLS_DIR/admin-client.p12" \
+    "$KAFKA_TLS_DIR/ui-client.p12" \
+    "$KAFKA_CLIENTS_DIR"/ingestion-client.crt \
+    "$KAFKA_CLIENTS_DIR"/diagnostics-client.crt \
+    "$KAFKA_CLIENTS_DIR"/webapi-client.crt \
+    "$KAFKA_CLIENTS_DIR"/ingestion-client.key \
+    "$KAFKA_CLIENTS_DIR"/diagnostics-client.key \
+    "$KAFKA_CLIENTS_DIR"/webapi-client.key \
     "$POSTGRES_TLS_DIR/server.crt"
+# The Postgres server key stays 0400: that container copies it to 0600 before
+# startup. The Kafka client keys match the other leaf volumes at 0444 because
+# the .NET containers read them as a non-root user.
 chmod 0400 "$POSTGRES_TLS_DIR/server.key"
