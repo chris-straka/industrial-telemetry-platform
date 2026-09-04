@@ -147,6 +147,8 @@ public class KafkaSignalRWorker(
         var config = new ConsumerConfig
         {
             BootstrapServers = kafka.BootstrapServers,
+            SecurityProtocol = kafka.UseTls ? SecurityProtocol.Ssl : SecurityProtocol.Plaintext,
+            SslCaLocation = kafka.UseTls ? kafka.SslCaLocation : null,
             // SignalR clients are local to this process. A shared group would split Kafka
             // partitions across replicas and each browser would see only the subset assigned to
             // its pod, so every replica deliberately gets its own broadcast subscription.

@@ -30,7 +30,11 @@ Remaining work:
   simulated device (CN=EQ-N), each emulator replica loads only its shard over per-device
   HttpClient chains, and the gateway binds the certificate subject to the claimed equipment
   ID (403 otherwise). Proven by unit tests, a live TLS round trip, and e2e identity checks.
-- add Kafka TLS/SASL and Postgres TLS plus workload-specific credentials;
+- Kafka client listeners now terminate TLS: the broker presents a dev-CA server
+  certificate, .NET clients verify it via SslCaLocation, JVM tools use a keytool-built
+  truststore, and kafka-ui connects over SSL. Still open: client-certificate auth
+  (SASL or mTLS) instead of server-only TLS, plus Postgres TLS and workload-specific
+  credentials;
 - protect observability ingestion and operator UIs;
 - replace the development CA bootstrap with managed enrollment, renewal, rotation, revocation, and
   audit; and

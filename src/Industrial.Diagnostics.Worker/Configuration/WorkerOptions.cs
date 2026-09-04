@@ -10,6 +10,13 @@ public class KafkaOptions : IValidatableObject
     [Required(AllowEmptyStrings = false)]
     public string BootstrapServers { get; set; } = string.Empty;
 
+    // Server-only TLS (no client certificate): the broker proves its identity via the
+    // dev CA. Hostname verification stays on, so the broker certificate needs a SAN
+    // for every advertised listener the clients use.
+    public bool UseTls { get; set; }
+
+    public string SslCaLocation { get; set; } = string.Empty;
+
     [Required(AllowEmptyStrings = false)]
     [StringLength(200)]
     public string GroupId { get; set; } = string.Empty;
@@ -39,6 +46,14 @@ public class KafkaOptions : IValidatableObject
             yield return new ValidationResult(
                 "Kafka event, alert, and dead-letter topics must be distinct.",
                 [nameof(EventsTopic), nameof(AlertsTopic), nameof(DeadLetterTopic)]
+            );
+        }
+
+        if (UseTls && string.IsNullOrWhiteSpace(SslCaLocation))
+        {
+            yield return new ValidationResult(
+                "Kafka:SslCaLocation is required when Kafka TLS is enabled.",
+                [nameof(SslCaLocation)]
             );
         }
     }

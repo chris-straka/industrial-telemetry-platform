@@ -402,14 +402,17 @@ wait_for_http_from_edge 'diagnostics readiness after Postgres recovery' \
 log 'Publishing malformed Kafka JSON and checking the durable DLQ copy'
 MALFORMED_TOKEN="e2e-malformed-$E2E_PROJECT_NAME"
 MALFORMED_PAYLOAD="{\"token\":\"$MALFORMED_TOKEN\""
+# The broker terminates client TLS; the JVM tools authenticate the same way with the
+# static client.properties the PKI step writes next to the CA truststore.
 compose exec -T kafka \
     /opt/kafka/bin/kafka-console-producer.sh \
-    --bootstrap-server kafka:9092 --topic telemetry-events <<< "$MALFORMED_PAYLOAD"
+    --bootstrap-server kafka:9092 --producer.config /tls/client.properties \
+    --topic telemetry-events <<< "$MALFORMED_PAYLOAD"
 
 if ! DLQ_RECORD="$(
     compose exec -T kafka \
         /opt/kafka/bin/kafka-console-consumer.sh \
-        --bootstrap-server kafka:9092 \
+        --bootstrap-server kafka:9092 --consumer.config /tls/client.properties \
         --topic telemetry-events-dlq \
         --from-beginning --max-messages 1 --timeout-ms 45000 \
         2>/dev/null
@@ -480,7 +483,7 @@ while true; do
     AMBIG_CONSUMER_OUTPUT="$(
         compose exec -T kafka \
             /opt/kafka/bin/kafka-console-consumer.sh \
-            --bootstrap-server kafka:9092 \
+            --bootstrap-server kafka:9092 --consumer.config /tls/client.properties \
             --topic telemetry-alerts \
             --from-beginning --timeout-ms 15000 \
             2>&1 || true

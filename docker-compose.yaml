@@ -14,6 +14,7 @@ services:
       - ingestion_tls_data:/ingestion
       - edge_gateway_tls_data:/edge
       - sensor_tls_data:/sensors
+      - kafka_tls_data:/kafka
 
   web-dashboard:
     image: node:24-alpine
@@ -36,11 +37,15 @@ services:
     build:
       context: .
       dockerfile: src/Industrial.Web.Api/Dockerfile
+    volumes:
+      - kafka_tls_data:/kafka-tls:ro
     ports:
       - "127.0.0.1:5090:8080"
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - Kafka__BootstrapServers=kafka:9092
+      - Kafka__UseTls=true
+      - Kafka__SslCaLocation=/kafka-tls/ca.crt
       - Kafka__GroupId=web-api-dashboard-group
       - Kafka__EventsTopic=telemetry-events
       - Kafka__AlertsTopic=telemetry-alerts
@@ -69,9 +74,12 @@ services:
       - "127.0.0.1:5091:8081"
     volumes:
       - ingestion_tls_data:/tls:ro
+      - kafka_tls_data:/kafka-tls:ro
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - Kafka__BootstrapServers=kafka:9092
+      - Kafka__UseTls=true
+      - Kafka__SslCaLocation=/kafka-tls/ca.crt
       - Kafka__EventsTopic=telemetry-events
       - Kafka__ReadinessTimeoutSeconds=3
       - Kestrel__Endpoints__Grpc__Url=https://+:8081
@@ -171,6 +179,8 @@ services:
       - Gemini__ApiKey=${GEMINI_API_KEY}
       - Gemini__Model=gemini-flash-lite-latest
       - Kafka__BootstrapServers=kafka:9092
+      - Kafka__UseTls=true
+      - Kafka__SslCaLocation=/kafka-tls/ca.crt
       - Kafka__GroupId=diagnostics-group
       - Kafka__EventsTopic=telemetry-events
       - Kafka__AlertsTopic=telemetry-alerts
@@ -178,6 +188,8 @@ services:
       - Kafka__ReadinessTimeoutSeconds=3
       - OTel__ServiceName=Industrial.Diagnostics.Worker
       - OTel__Endpoint=http://otel-collector:4317
+    volumes:
+      - kafka_tls_data:/kafka-tls:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -302,10 +314,22 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       # INTERNAL is advertised to Compose services; EXTERNAL is advertised to host tools.
+      # Both client listeners terminate TLS. The single-node controller quorum stays
+      # plaintext: it never leaves this broker. The dev keystore password is the same
+      # class of placeholder as the Compose Postgres password.
       KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:SSL,EXTERNAL:SSL,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_SSL_KEYSTORE_LOCATION: /tls/kafka-server.p12
+      KAFKA_SSL_KEYSTORE_PASSWORD: changeit
+      KAFKA_SSL_KEY_PASSWORD: changeit
+      KAFKA_SSL_KEYSTORE_TYPE: PKCS12
+      # The broker verifies its own inter-broker connection at startup, so it needs
+      # the CA truststore a client would carry.
+      KAFKA_SSL_TRUSTSTORE_LOCATION: /tls/ca.p12
+      KAFKA_SSL_TRUSTSTORE_PASSWORD: changeit
+      KAFKA_SSL_TRUSTSTORE_TYPE: PKCS12
       # Kafka's own Docker examples use this base64 UUID form for a stable KRaft cluster ID.
       CLUSTER_ID: abcdefghijklmnopqrstuv
       # Keep the previous Bitnami volume layout (`data/`) so changing images does not discard
@@ -320,8 +344,11 @@ services:
       KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
     volumes:
       - kafka_data:/var/lib/kafka
+      - kafka_tls_data:/tls:ro
     depends_on:
       kafka-storage-init:
+        condition: service_completed_successfully
+      kafka-truststore-init:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:9094:9094" # Map external port (for Kafka UI tools on Mac)
@@ -329,31 +356,61 @@ services:
       test:
         [
           "CMD-SHELL",
-          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --command-config /tls/client.properties --list",
         ]
       interval: 10s
       timeout: 10s
       retries: 10
 
+  # Imports the dev CA into a Java truststore with keytool. The openssl-minted files
+  # all come from dev-pki-init; only this Java-native step needs the Kafka image.
+  kafka-truststore-init:
+    image: apache/kafka:4.2.0
+    user: "0:0"
+    volumes:
+      - dev_pki_authority_data:/authority:ro
+      - kafka_tls_data:/kafka
+    depends_on:
+      dev-pki-init:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        rm -f /kafka/ca.p12
+        keytool -import -trustcacerts -alias dev-ca \
+          -file /authority/ca.crt -keystore /kafka/ca.p12 \
+          -storepass changeit -storetype PKCS12 -noprompt
+        chmod 0444 /kafka/ca.p12
+
   kafka-init:
     image: apache/kafka:4.2.0
+    volumes:
+      - kafka_tls_data:/tls:ro
     depends_on:
       kafka:
         condition: service_healthy
     entrypoint: ["/bin/bash", "-ec"]
     command:
       - |
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-events --partitions 6 --replication-factor 1
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-alerts --partitions 6 --replication-factor 1
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic telemetry-events-dlq --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /tls/client.properties --create --if-not-exists --topic telemetry-events --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /tls/client.properties --create --if-not-exists --topic telemetry-alerts --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /tls/client.properties --create --if-not-exists --topic telemetry-events-dlq --partitions 6 --replication-factor 1
 
   kafka-ui:
     image: provectuslabs/kafka-ui:v0.7.2
     ports:
       - "127.0.0.1:8080:8080"
+    volumes:
+      - kafka_tls_data:/tls:ro
     environment:
       - KAFKA_CLUSTERS_0_NAME=local
       - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+      # The UI is a read-only observer here: it verifies the broker identity but
+      # presents no client certificate.
+      - KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL=SSL
+      - KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_LOCATION=/tls/ca.p12
+      - KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_PASSWORD=changeit
+      - KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_TYPE=PKCS12
     depends_on:
       kafka:
         condition: service_healthy
@@ -489,6 +546,7 @@ volumes:
   grafana_data:
   alertmanager_data:
   sensor_tls_data:
+  kafka_tls_data:
   dev_pki_authority_data:
   ingestion_tls_data:
   edge_gateway_tls_data:

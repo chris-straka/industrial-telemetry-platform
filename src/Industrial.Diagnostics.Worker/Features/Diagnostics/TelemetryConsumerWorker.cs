@@ -44,6 +44,8 @@ public class TelemetryConsumerWorker(
         var config = new ConsumerConfig
         {
             BootstrapServers = kafkaConfig.BootstrapServers,
+            SecurityProtocol = kafkaConfig.UseTls ? SecurityProtocol.Ssl : SecurityProtocol.Plaintext,
+            SslCaLocation = kafkaConfig.UseTls ? kafkaConfig.SslCaLocation : null,
             GroupId = kafkaConfig.GroupId,
             AutoOffsetReset = AutoOffsetReset.Earliest,
             MetadataMaxAgeMs = 5000,

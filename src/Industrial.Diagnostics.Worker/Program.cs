@@ -95,6 +95,8 @@ builder.Services.AddSingleton(sp =>
     var config = new ProducerConfig
     {
         BootstrapServers = kafka.BootstrapServers,
+        SecurityProtocol = kafka.UseTls ? SecurityProtocol.Ssl : SecurityProtocol.Plaintext,
+        SslCaLocation = kafka.UseTls ? kafka.SslCaLocation : null,
         Acks = Acks.All,
         EnableIdempotence = true,
         MessageTimeoutMs = 20_000,
@@ -112,6 +114,8 @@ builder.Services.AddSingleton<IAdminClient>(
         new AdminClientConfig
         {
             BootstrapServers = kafka.BootstrapServers,
+            SecurityProtocol = kafka.UseTls ? SecurityProtocol.Ssl : SecurityProtocol.Plaintext,
+            SslCaLocation = kafka.UseTls ? kafka.SslCaLocation : null,
             AllowAutoCreateTopics = false,
         }
     ).Build()

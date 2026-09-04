@@ -148,7 +148,8 @@ make db-update
 Docker Compose is the supported runnable path. Its edge-to-ingestion gRPC hop uses mutual TLS with
 a private development CA and an allowlisted gateway certificate fingerprint. That is a local
 demonstration of per-gateway identity, not a production PKI. Sensor-to-edge traffic uses mutual
-TLS with per-device client certificates bound to equipment IDs. Kafka, Postgres, and
+TLS with per-device client certificates bound to equipment IDs. Kafka client traffic uses
+server-side TLS against the dev CA on both listeners. Postgres and
 observability traffic remain plaintext and unauthenticated inside the Compose network.
 
 The Helm/Tilt/Terraform material is still a render/plan prototype, not a production deployment

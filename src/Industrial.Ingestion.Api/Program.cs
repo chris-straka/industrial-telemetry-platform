@@ -138,6 +138,11 @@ builder.Services.AddSingleton(sp => // service provider
     var config = new ProducerConfig
     {
         BootstrapServers = kafka.BootstrapServers,
+        // Broker identity is verified against the dev CA whenever UseTls is on.
+        // Hostname verification stays at its default, so the broker certificate SAN
+        // list must cover every advertised listener the clients use.
+        SecurityProtocol = kafka.UseTls ? SecurityProtocol.Ssl : SecurityProtocol.Plaintext,
+        SslCaLocation = kafka.UseTls ? kafka.SslCaLocation : null,
         Acks = Acks.All,
         EnableIdempotence = true,
         LingerMs = 20,
@@ -163,6 +168,8 @@ builder.Services.AddSingleton<IAdminClient>(sp =>
         new AdminClientConfig
         {
             BootstrapServers = options.BootstrapServers,
+            SecurityProtocol = options.UseTls ? SecurityProtocol.Ssl : SecurityProtocol.Plaintext,
+            SslCaLocation = options.UseTls ? options.SslCaLocation : null,
             AllowAutoCreateTopics = false,
         }
     ).Build();

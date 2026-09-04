@@ -8,8 +8,12 @@ EDGE_TLS_DIR=${EDGE_TLS_DIR:-/edge}
 SENSOR_TLS_DIR=${SENSOR_TLS_DIR:-/sensors}
 # Three emulator replicas of four devices each: EQ-0 through EQ-11.
 SENSOR_DEVICE_COUNT=${SENSOR_DEVICE_COUNT:-12}
+KAFKA_TLS_DIR=${KAFKA_TLS_DIR:-/kafka}
+# Development-only keystore password, same class of placeholder as the Compose
+# Postgres password. Production uses a managed secret, never a baked-in literal.
+KAFKA_TLS_PASSWORD=${KAFKA_TLS_PASSWORD:-changeit}
 
-mkdir -p "$AUTHORITY_DIR" "$INGESTION_TLS_DIR" "$EDGE_TLS_DIR" "$SENSOR_TLS_DIR"
+mkdir -p "$AUTHORITY_DIR" "$INGESTION_TLS_DIR" "$EDGE_TLS_DIR" "$SENSOR_TLS_DIR" "$KAFKA_TLS_DIR"
 umask 077
 
 if ! openssl x509 -in "$AUTHORITY_DIR/ca.crt" -checkend 604800 -noout >/dev/null 2>&1 \
@@ -30,9 +34,10 @@ trap 'rm -rf "$work_dir"' EXIT INT TERM
 pfx_is_current() {
     pfx_check_path=$1
     pfx_check_purpose=$2
+    pfx_check_password=${3:-}
     pfx_check_certificate="$work_dir/check-$pfx_check_purpose.crt"
 
-    openssl pkcs12 -in "$pfx_check_path" -passin pass: -clcerts -nokeys \
+    openssl pkcs12 -in "$pfx_check_path" -passin "pass:$pfx_check_password" -clcerts -nokeys \
         -out "$pfx_check_certificate" >/dev/null 2>&1 \
         && openssl x509 -in "$pfx_check_certificate" -checkend 604800 -noout \
             >/dev/null 2>&1 \
@@ -133,6 +138,40 @@ mv "$EDGE_TLS_DIR/ca.crt.tmp" "$EDGE_TLS_DIR/ca.crt"
 cp "$AUTHORITY_DIR/ca.crt" "$SENSOR_TLS_DIR/ca.crt.tmp"
 mv "$SENSOR_TLS_DIR/ca.crt.tmp" "$SENSOR_TLS_DIR/ca.crt"
 
+# Kafka brokers terminate client TLS. One server identity (SAN: kafka for the Compose
+# network, localhost for host tools) plus a CA-only truststore and a static client
+# properties file for the JVM tools (kafka-topics, console producer/consumer).
+if ! pfx_is_current "$KAFKA_TLS_DIR/kafka-server.p12" sslserver "$KAFKA_TLS_PASSWORD"; then
+    issue_certificate \
+        kafka-server \
+        kafka \
+        serverAuth \
+        'DNS:kafka,DNS:localhost' \
+        "$KAFKA_TLS_DIR" \
+        kafka-server.p12
+    # issue_certificate mints empty-password stores; re-wrap with the Kafka password
+    # so the broker and the freshness check above share one credential.
+    openssl pkcs12 -in "$KAFKA_TLS_DIR/kafka-server.p12" -passin pass: -nodes \
+        -out "$work_dir/kafka-server.pem" 2>/dev/null
+    openssl pkcs12 -export \
+        -in "$work_dir/kafka-server.pem" \
+        -passout "pass:$KAFKA_TLS_PASSWORD" \
+        -out "$KAFKA_TLS_DIR/kafka-server.p12.tmp" 2>/dev/null
+    mv "$KAFKA_TLS_DIR/kafka-server.p12.tmp" "$KAFKA_TLS_DIR/kafka-server.p12"
+fi
+# PEM CA for librdkafka clients (SslCaLocation). The JVM truststore (ca.p12) is built
+# by kafka-truststore-init with keytool: openssl's PKCS12 cert bags load as zero
+# entries in a Java truststore, so openssl cannot mint that file.
+cp "$AUTHORITY_DIR/ca.crt" "$KAFKA_TLS_DIR/ca.crt.tmp"
+mv "$KAFKA_TLS_DIR/ca.crt.tmp" "$KAFKA_TLS_DIR/ca.crt"
+cat > "$KAFKA_TLS_DIR/client.properties.tmp" <<EOF
+security.protocol=SSL
+ssl.truststore.location=/tls/ca.p12
+ssl.truststore.password=$KAFKA_TLS_PASSWORD
+ssl.truststore.type=PKCS12
+EOF
+mv "$KAFKA_TLS_DIR/client.properties.tmp" "$KAFKA_TLS_DIR/client.properties"
+
 fingerprint=$(
     openssl pkcs12 -in "$EDGE_TLS_DIR/client.pfx" -passin pass: -clcerts -nokeys 2>/dev/null \
         | openssl x509 -noout -fingerprint -sha256 \
@@ -154,4 +193,7 @@ chmod 0444 \
     "$EDGE_TLS_DIR/server.pfx" \
     "$EDGE_TLS_DIR/ca.crt" \
     "$SENSOR_TLS_DIR/ca.crt" \
-    "$SENSOR_TLS_DIR"/device-EQ-*.pfx
+    "$SENSOR_TLS_DIR"/device-EQ-*.pfx \
+    "$KAFKA_TLS_DIR/kafka-server.p12" \
+    "$KAFKA_TLS_DIR/ca.crt" \
+    "$KAFKA_TLS_DIR/client.properties"
