@@ -39,12 +39,14 @@ Remaining work:
   rejected. Still open: Kafka ACLs (identity without authorization), SASL as an
   alternative mechanism, and the EXTERNAL listener now also needs a client cert for
   host tools;
-- Postgres now terminates TLS: the server presents a dev-CA PEM identity (SAN
-  `postgres`/`localhost`) and the diagnostics worker connects with
-  `SSL Mode=VerifyFull` against the CA it already mounts for Kafka. The server key
-  stays in a volume mounted only into the database container. Still open: forbid
-  plaintext in pg_hba (host EF tooling currently still uses it) plus
-  workload-specific credentials;
+- Postgres now terminates TLS and enforces it: the server presents a dev-CA PEM
+  identity (SAN `postgres`/`localhost`), pg_hba rejects plaintext TCP, and the
+  diagnostics worker connects with `SSL Mode=VerifyFull` as a non-superuser
+  `diagnostics` role converged by the postgres-init one-shot (idempotent, so it
+  also upgrades pre-existing volumes). The role keeps DDL because the worker
+  applies EF migrations at startup. Host EF tooling uses `make db-update`, which
+  exports the dev CA via `make certs` and connects with VerifyFull; and
+- Kafka client listeners now require mutual TLS;
 - protect observability ingestion and operator UIs;
 - replace the development CA bootstrap with managed enrollment, renewal, rotation, revocation, and
   audit; and

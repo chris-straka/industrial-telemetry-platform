@@ -176,10 +176,10 @@ services:
       dockerfile: src/Industrial.Diagnostics.Worker/Dockerfile
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      # VerifyFull against the dev CA the worker already mounts for Kafka. Plaintext
-      # stays possible at the server (pg_hba is unchanged) so host EF tooling keeps
-      # working; the worker itself never connects without verification.
-      - ConnectionStrings__IndustrialDb=Host=postgres;Database=industrial_db;Username=admin;Password=password;SSL Mode=VerifyFull;Root Certificate=/kafka-tls/ca.crt
+      # VerifyFull against the dev CA the worker already mounts for Kafka, as the
+      # non-superuser workload role. Plaintext TCP is rejected by pg_hba; host EF
+      # tooling must use an SSL connection string (see `make db-update`).
+      - ConnectionStrings__IndustrialDb=Host=postgres;Database=industrial_db;Username=diagnostics;Password=diagnostics-password;SSL Mode=VerifyFull;Root Certificate=/kafka-tls/ca.crt
       - Consumer__BaseBackoffSeconds=1
       - Consumer__MaxBackoffSeconds=30
       - Outbox__IdleDelayMs=500
@@ -207,6 +207,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
     healthcheck:
@@ -286,6 +288,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql
       - postgres_tls_data:/postgres-tls:ro
+      - ./postgres/pg_hba.conf:/etc/pg-hba/pg_hba.conf:ro
     # The server key must be 0600 and owned by postgres, but the PKI volume is
     # root-owned and read-only. Stage the pair in a tls/ sibling of PGDATA on every
     # start (so rotation applies on restart): PGDATA itself must stay empty until
@@ -302,7 +305,8 @@ services:
         exec docker-entrypoint.sh postgres \
           -c ssl=on \
           -c ssl_cert_file=/var/lib/postgresql/tls/server.crt \
-          -c ssl_key_file=/var/lib/postgresql/tls/server.key
+          -c ssl_key_file=/var/lib/postgresql/tls/server.key \
+          -c hba_file=/etc/pg-hba/pg_hba.conf
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: password
@@ -317,6 +321,28 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # Converges workload roles on every start (idempotent SQL), including databases
+  # initialized before the roles existed. Runs after postgres is healthy and before
+  # anything connects as a workload role.
+  postgres-init:
+    image: postgres:18
+    volumes:
+      - ./postgres/init-roles.sql:/init/init-roles.sql:ro
+      - postgres_tls_data:/pg-tls:ro
+    environment:
+      PGPASSWORD: password
+      POSTGRES_DIAGNOSTICS_PASSWORD: diagnostics-password
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        psql "host=postgres user=admin dbname=industrial_db sslmode=verify-full sslrootcert=/pg-tls/ca.crt" \
+          -v diag_password="$$POSTGRES_DIAGNOSTICS_PASSWORD" \
+          -v ON_ERROR_STOP=1 \
+          -f /init/init-roles.sql
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   pgadmin:
     image: dpage/pgadmin4:9.14

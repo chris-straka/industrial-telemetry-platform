@@ -238,6 +238,19 @@ postgres_ssl_enabled() {
     [ "$(query_db 'SHOW ssl;' 2>/dev/null || true)" = 'on' ]
 }
 
+postgres_rejects_plaintext_tcp() {
+    if compose exec -T postgres \
+        psql 'host=postgres user=admin dbname=industrial_db sslmode=disable connect_timeout=5' \
+        -tAc 'SELECT 1' >/dev/null 2>&1; then
+        return 1
+    fi
+    return 0
+}
+
+diagnostics_role_is_not_superuser() {
+    [ "$(query_db "SELECT rolsuper FROM pg_roles WHERE rolname='diagnostics';" 2>/dev/null || true)" = 'f' ]
+}
+
 diagnostics_connects_with_tls() {
     count="$(query_db 'SELECT count(*) FROM pg_stat_ssl WHERE ssl;' 2>/dev/null || true)"
     [ -n "$count" ] && [ "$count" -ge 1 ]
@@ -335,6 +348,7 @@ log 'Starting Postgres and Kafka'
 compose up --detach postgres kafka-init
 wait_for_container_health postgres "$STARTUP_TIMEOUT"
 wait_until 'Postgres TLS listener' "$STARTUP_TIMEOUT" postgres_ssl_enabled
+wait_until 'Postgres rejects plaintext TCP' "$STARTUP_TIMEOUT" postgres_rejects_plaintext_tcp
 wait_for_container_health kafka "$STARTUP_TIMEOUT"
 # kafka-init has no healthcheck; its successful one-shot state is exited with status zero.
 wait_until 'Kafka topic initialization' "$STARTUP_TIMEOUT" kafka_init_succeeded
@@ -413,6 +427,10 @@ wait_until 'three unique telemetry rows in Postgres' 60 \
 # true row here must be the worker's VerifyFull TCP connection.
 wait_until 'diagnostics worker TLS connection to Postgres' 30 \
     diagnostics_connects_with_tls
+# The worker just persisted rows above, so its role works; this proves it does so
+# without superuser privilege.
+wait_until 'diagnostics role is not a superuser' 30 \
+    diagnostics_role_is_not_superuser
 
 log 'Stopping Postgres and proving Diagnostics rewinds the consumed record'
 POSTGRES_OUTAGE_STARTED="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"

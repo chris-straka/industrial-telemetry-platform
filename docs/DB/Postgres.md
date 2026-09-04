@@ -129,6 +129,25 @@ unchanged through every hop.
 | `IX_TelemetryReadings_MessageId` UNIQUE | The deduplication guarantee. A database constraint, not application logic, so it holds even if the `AnyAsync` pre-check races. |
 | `IX_TelemetryReadings_EquipmentId_OccurredAt` | The dashboard's query shape: one machine's readings over a time window, in event-time order. |
 
+## Connections: TLS, roles, and pg_hba
+
+None of the above matters if the wrong process can connect. Compose runs Postgres
+with `ssl=on` and a `hba_file` (`postgres/pg_hba.conf`) that rejects plaintext TCP:
+every TCP connection must negotiate TLS with SCRAM authentication. Unix-socket
+connections from inside the container stay trusted for the healthcheck and operator
+`docker exec psql`.
+
+The diagnostics worker connects as a non-superuser `diagnostics` role (converged by
+the idempotent `postgres-init` one-shot, so pre-existing volumes pick it up on the
+next start) with `SSL Mode=VerifyFull`. The role keeps DDL because the worker
+applies EF migrations at startup — this is credential separation, not a read-only
+grant.
+
+Host tooling goes through the published port with the same rules: `make db-update`
+exports the dev CA (`make certs`) and connects with VerifyFull. A
+`sslmode=disable` connection is rejected; the e2e harness asserts exactly that,
+plus a worker SSL row in `pg_stat_ssl` and `rolsuper = false`.
+
 ## Migration note
 
 The original schema history was squashed into `InitialCreate` while nothing outside a throwaway

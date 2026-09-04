@@ -8,7 +8,7 @@ hop. It does not make the whole local platform a zero-trust deployment.
 | edge gateway -> ingestion gRPC | TLS plus required client certificate | development PKI; one simulated gateway identity |
 | sensor -> edge receiver | mutual TLS, one client certificate per simulated device bound to its equipment ID | development PKI; 12 simulated device identities |
 | applications -> Kafka | mutual TLS, one client certificate per workload plus admin/UI observer identities | no Kafka ACLs: identity is proven at the handshake, not authorization; development PKI |
-| diagnostics -> Postgres | server-side TLS, worker connects with VerifyFull against the dev CA | plaintext still permitted by pg_hba for host EF tooling; development credential |
+| diagnostics -> Postgres | server-side TLS with VerifyFull, non-superuser workload role, plaintext TCP rejected by pg_hba | development passwords in Compose config; worker still needs DDL for startup migrations |
 | applications -> OTel collector/backends | private Compose network | plaintext, unauthenticated OTLP/backend traffic |
 | dashboard/operator tools | host ports bound to `127.0.0.1` | local-only exposure is not application authentication |
 

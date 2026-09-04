@@ -65,3 +65,6 @@ crash.*.log
 
 # My stuff
 AI.md
+
+# Host-exported development TLS material (see `make certs`)
+certs/

@@ -274,6 +274,10 @@ done
 # entries in a Java truststore, so openssl cannot mint that file.
 cp "$AUTHORITY_DIR/ca.crt" "$KAFKA_TLS_DIR/ca.crt.tmp"
 mv "$KAFKA_TLS_DIR/ca.crt.tmp" "$KAFKA_TLS_DIR/ca.crt"
+# postgres-init verifies the server over TCP, so it needs the CA next to the
+# server identity (this volume is mounted into postgres and postgres-init only).
+cp "$AUTHORITY_DIR/ca.crt" "$POSTGRES_TLS_DIR/ca.crt.tmp"
+mv "$POSTGRES_TLS_DIR/ca.crt.tmp" "$POSTGRES_TLS_DIR/ca.crt"
 cat > "$KAFKA_TLS_DIR/client.properties.tmp" <<EOF
 security.protocol=SSL
 ssl.truststore.location=/tls/ca.p12
@@ -318,7 +322,8 @@ chmod 0444 \
     "$KAFKA_CLIENTS_DIR"/ingestion-client.key \
     "$KAFKA_CLIENTS_DIR"/diagnostics-client.key \
     "$KAFKA_CLIENTS_DIR"/webapi-client.key \
-    "$POSTGRES_TLS_DIR/server.crt"
+    "$POSTGRES_TLS_DIR/server.crt" \
+    "$POSTGRES_TLS_DIR/ca.crt"
 # The Postgres server key stays 0400: that container copies it to 0600 before
 # startup. The Kafka client keys match the other leaf volumes at 0444 because
 # the .NET containers read them as a non-root user.

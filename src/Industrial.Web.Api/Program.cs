@@ -80,6 +80,10 @@ builder.Services.AddSingleton<IAdminClient>(
         new AdminClientConfig
         {
             BootstrapServers = kafka.BootstrapServers,
+            SecurityProtocol = kafka.UseTls ? SecurityProtocol.Ssl : SecurityProtocol.Plaintext,
+            SslCaLocation = kafka.UseTls ? kafka.SslCaLocation : null,
+            SslCertificateLocation = kafka.UseTls ? kafka.SslCertificateLocation : null,
+            SslKeyLocation = kafka.UseTls ? kafka.SslKeyLocation : null,
             AllowAutoCreateTopics = false,
         }
     ).Build()
