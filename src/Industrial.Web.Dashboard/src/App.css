@@ -72,10 +72,15 @@
   }
 }
 
-table.alerts {
+table.alerts,
+table.equipment {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.9rem;
+}
+
+table.equipment {
+  margin-top: 16px;
 }
 
 table.alerts caption {
@@ -86,11 +91,24 @@ table.alerts caption {
 }
 
 table.alerts th,
-table.alerts td {
+table.alerts td,
+table.equipment th,
+table.equipment td {
   text-align: left;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
+}
+
+table.equipment caption {
+  text-align: left;
+  font-weight: 600;
+  padding-bottom: 8px;
+  color: var(--text-h);
+}
+
+table.equipment tr.muted td {
+  opacity: 0.45;
 }
 
 .empty {

@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react'
 import type { TelemetryEvent, TelemetryAlert } from './types/telemetry'
 import { useTelemetry, type ConnectionStatus } from './hooks/useTelemetry'
 import { TelemetryChart } from './features/dashboard/TelemetryChart'
+import { EquipmentPanel } from './features/dashboard/EquipmentPanel'
 import { AlertsList } from './features/dashboard/AlertsList'
 import { StatusBadge } from './features/dashboard/StatusBadge'
 import { remember } from './lib/dedupe'
@@ -17,6 +18,7 @@ function App() {
   const eventIdOrder = useRef<string[]>([])
   const seenAlertIds = useRef(new Set<string>())
   const alertIdOrder = useRef<string[]>([])
+  const [hiddenEquipment, setHiddenEquipment] = useState<Set<string>>(new Set())
 
   const handleEvent = useCallback((event: TelemetryEvent) => {
     if (!remember(event.MessageId, seenEventIds.current, eventIdOrder.current, 2_000)) return
@@ -31,8 +33,24 @@ function App() {
     setLastMessageAt(Date.now())
   }, [])
 
+  const toggleEquipment = useCallback((equipmentId: string) => {
+    setHiddenEquipment((prev) => {
+      const next = new Set(prev)
+      if (next.has(equipmentId)) next.delete(equipmentId)
+      else next.add(equipmentId)
+      return next
+    })
+  }, [])
+
   // Kafka API updates happen here
   useTelemetry(handleEvent, handleAlert, setStatus)
+
+  // The filter hides chart lines only. Alerts stay global so unticking a noisy
+  // device can never silently hide its anomalies.
+  const visibleEvents =
+    hiddenEquipment.size === 0
+      ? events
+      : events.filter((event) => !hiddenEquipment.has(event.EquipmentId))
 
   return (
     <div className="dashboard">
@@ -42,7 +60,8 @@ function App() {
       </header>
       <div className="grid">
         <section>
-          <TelemetryChart data={events} />
+          <TelemetryChart data={visibleEvents} />
+          <EquipmentPanel events={events} hidden={hiddenEquipment} onToggle={toggleEquipment} />
         </section>
         <aside>
           <AlertsList alerts={alerts} />
