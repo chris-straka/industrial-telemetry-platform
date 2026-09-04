@@ -72,6 +72,53 @@ public class BufferOptions
     public int QuarantineMaxRows { get; set; }
 }
 
+/// <summary>
+/// Sensor-to-edge mutual TLS. Each device carries its own client certificate whose subject
+/// name is its equipment ID, so one compromised device cannot impersonate another shard.
+/// Disabled by default; the Compose stack enables it once the emulator presents certs.
+/// </summary>
+public sealed class SensorSecurityOptions : IValidatableObject
+{
+    public const string Section = "SensorSecurity";
+
+    public bool Enabled { get; set; }
+
+    // Dedicated HTTPS listener for sensor traffic. Health and buffer inspection stay on
+    // plaintext HTTP: they never accept readings and the compose healthchecks use them.
+    [Range(1, 65535)]
+    public int ListenPort { get; set; } = 8443;
+
+    public string ServerCertificatePath { get; set; } = string.Empty;
+
+    // Same empty-password development convention as the cloud hop: the private key lives
+    // in an isolated volume, never in configuration.
+    public string? ServerCertificatePassword { get; set; }
+
+    public string TrustedSensorCaPath { get; set; } = string.Empty;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (!Enabled)
+            yield break;
+
+        if (string.IsNullOrWhiteSpace(ServerCertificatePath))
+        {
+            yield return new ValidationResult(
+                "SensorSecurity:ServerCertificatePath is required when sensor mTLS is enabled.",
+                [nameof(ServerCertificatePath)]
+            );
+        }
+
+        if (string.IsNullOrWhiteSpace(TrustedSensorCaPath))
+        {
+            yield return new ValidationResult(
+                "SensorSecurity:TrustedSensorCaPath is required when sensor mTLS is enabled.",
+                [nameof(TrustedSensorCaPath)]
+            );
+        }
+    }
+}
+
 public class UploaderOptions
 {
     public const string Section = "Uploader";

@@ -59,6 +59,11 @@ builder
     .Bind(builder.Configuration.GetSection(TransportSecurityOptions.Section))
     .ValidateDataAnnotations()
     .ValidateOnStart();
+builder
+    .Services.AddOptions<SensorSecurityOptions>()
+    .Bind(builder.Configuration.GetSection(SensorSecurityOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
 
 // Needed during registration, before the service provider container exists.
 var otel = builder.Configuration.GetSection(OTelOptions.Section).Get<OTelOptions>()!;
@@ -67,6 +72,10 @@ var buffer = builder.Configuration.GetSection(BufferOptions.Section).Get<BufferO
 var transportSecurity =
     builder.Configuration.GetSection(TransportSecurityOptions.Section)
         .Get<TransportSecurityOptions>() ?? new TransportSecurityOptions();
+var sensorSecurity =
+    builder.Configuration.GetSection(SensorSecurityOptions.Section)
+        .Get<SensorSecurityOptions>() ?? new SensorSecurityOptions();
+builder.AddSensorSecurity(sensorSecurity);
 #endregion
 
 if (

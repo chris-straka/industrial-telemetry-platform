@@ -71,6 +71,16 @@ public sealed class EdgeMetrics : IDisposable
             description: "Readings dropped because the cloud named them as permanently refused."
         );
 
+        // 403, deliberately not 400: the reading may be well-formed while the sender is
+        // simply not its device. No alert rule watches this counter: it is driven by
+        // unauthenticated input, and paging on attacker-controlled traffic is a self-DoS
+        // primitive. Investigate spikes in the gateway logs instead.
+        IdentityRejected = _meter.CreateCounter<long>(
+            "edge.telemetry.identity_rejected",
+            unit: "{reading}",
+            description: "Readings refused because the sender presented no certificate or one not authorized for the claimed equipment ID."
+        );
+
         // Tagged by outcome, because an unreachable cloud and one refusing this caller
         // are one climbing line otherwise, and they need different people to fix them
         _uploadFailures = _meter.CreateCounter<long>(
@@ -115,6 +125,7 @@ public sealed class EdgeMetrics : IDisposable
     public Counter<long> Rejected { get; }
     public Counter<long> Shed { get; }
     public Counter<long> Malformed { get; }
+    public Counter<long> IdentityRejected { get; }
 
     // A method rather than a public counter, so every sample carries the tag
     // An untagged Add from somewhere else would land in the same metric with no outcome at all

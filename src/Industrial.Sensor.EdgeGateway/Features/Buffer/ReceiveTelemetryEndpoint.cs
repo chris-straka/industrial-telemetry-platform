@@ -42,9 +42,35 @@ public static class ReceiveTelemetryEndpoint
                 BufferDepth bufferDepth,
                 BufferMutationGate mutationGate,
                 IOptions<BufferOptions> bufferOptions,
+                SensorSecurityState sensorSecurity,
                 HttpContext http
             ) =>
             {
+                // Authenticate before validating: a well-formed reading from the wrong
+                // device is still refused. On the plaintext ops listener no certificate
+                // can exist, so enabling sensor mTLS closes that listener for readings.
+                if (sensorSecurity.Options.Enabled)
+                {
+                    var identityError = SensorIdentityValidator.Validate(
+                        http.Connection.ClientCertificate,
+                        sensorSecurity.TrustedRoot,
+                        req.EquipmentId
+                    );
+                    if (identityError is not null)
+                    {
+                        metrics.IdentityRejected.Add(1);
+                        logger.LogWarning(
+                            "Refused reading for {EquipmentId}: {Reason}.",
+                            req.EquipmentId,
+                            identityError
+                        );
+                        return Results.Json(
+                            new { error = identityError },
+                            statusCode: StatusCodes.Status403Forbidden
+                        );
+                    }
+                }
+
                 var validationError = TelemetryAdmissionValidator.Validate(
                     req,
                     out var canonicalMessageId

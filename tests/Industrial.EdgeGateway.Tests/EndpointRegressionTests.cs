@@ -87,6 +87,7 @@ public sealed class EndpointRegressionTests
         builder.Services.AddSingleton<BufferDepth>();
         builder.Services.AddSingleton<BufferMutationGate>();
         builder.Services.AddSingleton<EdgeMetrics>();
+        builder.AddSensorSecurity(new SensorSecurityOptions { Enabled = false });
         builder.Services.Configure<BufferOptions>(options =>
         {
             options.Path = "unused.db";
