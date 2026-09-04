@@ -180,7 +180,7 @@ Compose publishes development ports on `127.0.0.1` only.
 | ingestion-api | 5089 | REST (HTTP/1.1), manual testing only |
 | ingestion-api | 5091 | gRPC (HTTPS/HTTP/2); requires the generated gateway client certificate |
 | edge-gateway | 5272 | sensor receiver, `/health`, `/health/ready`, and buffer inspection |
-| grafana | 3000 | anonymous viewer; provisioned dashboard, alerts, logs, metrics, and traces |
+| grafana | 3000 | login required (admin); provisioned dashboard, alerts, logs, metrics, and traces |
 | kafka-ui | 8080 | |
 | pgadmin | 5050 | |
 

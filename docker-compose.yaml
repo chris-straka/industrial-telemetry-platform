@@ -624,8 +624,13 @@ services:
       - ./monitoring/grafana-dashboard-industrial-platform.json:/var/lib/grafana/dashboards/industrial-platform.json:ro
       - grafana_data:/var/lib/grafana/data
     environment:
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      # No anonymous access: the operator signs in as admin. The password applies
+      # on first init; an existing grafana_data volume keeps whatever was set when
+      # it was created (until `down -v`). Same placeholder class as the other
+      # development passwords in this file.
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_PATHS_DATA=/var/lib/grafana/data
       # The provisioned dashboard uses built-in data sources only; do not download optional
       # catalog apps during startup of this reproducible local stack.

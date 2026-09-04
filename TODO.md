@@ -50,7 +50,11 @@ Remaining work:
   applies EF migrations at startup. Host EF tooling uses `make db-update`, which
   exports the dev CA via `make certs` and connects with VerifyFull; and
 - Kafka client listeners now require mutual TLS;
-- protect observability ingestion and operator UIs;
+- observability UIs are loopback-only; Grafana additionally requires the admin
+  login (anonymous viewer is off). Prometheus, Alertmanager, MailHog, kafka-ui,
+  and pgAdmin have no application authentication beyond loopback binding, and OTLP
+  ingestion has none by protocol. Still open: per-user identity and secrets for
+  those surfaces;
 - replace the development CA bootstrap with managed enrollment, renewal, rotation, revocation, and
   audit; and
 - the gateway allowlist now reloads on a timer (`TransportSecurity:AllowlistReloadIntervalSeconds`,

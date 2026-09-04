@@ -10,7 +10,8 @@ hop. It does not make the whole local platform a zero-trust deployment.
 | applications -> Kafka | mutual TLS plus StandardAuthorizer ACLs: one client identity per workload, each with only its topics/groups/cluster operations; broker and topic-setup admin are superusers | development PKI and passwords; no per-record or per-key authorization |
 | diagnostics -> Postgres | server-side TLS with VerifyFull, non-superuser workload role, plaintext TCP rejected by pg_hba | development passwords in Compose config; worker still needs DDL for startup migrations |
 | applications -> OTel collector/backends | private Compose network | plaintext, unauthenticated OTLP/backend traffic |
-| dashboard/operator tools | host ports bound to `127.0.0.1` | local-only exposure is not application authentication |
+| Grafana | loopback-only port plus required admin login | development password in Compose config, applied on first init |
+| Prometheus / Alertmanager / MailHog / kafka-ui / pgAdmin | host ports bound to `127.0.0.1` | local-only exposure is not application authentication; no per-user login |
 
 The explicit boundary matters: saying “the platform uses mTLS” without naming the protected hop
 would overstate what this repository proves.
