@@ -62,6 +62,9 @@ certs: ## export the dev CA and workload client identities for host-side tooling
 	VOL=$$(docker volume ls -q --filter name=kafka_clients_tls_data | head -n 1); \
 	docker run --rm -v "$$VOL":/v:ro -v "$(CURDIR)/certs":/out alpine sh -c "cp /v/*-client.crt /v/*-client.key /out/ && chmod 644 /out/*"
 
+certs-check: ## audit dev PKI expiry (WARN_DAYS=30 by default)
+	docker compose run --rm --no-deps -v "$(CURDIR)/scripts/check-cert-expiry.sh":/usr/local/bin/check-cert-expiry.sh:ro -e WARN_DAYS=$${WARN_DAYS:-30} dev-pki-init "apk add --no-cache openssl >/dev/null && /usr/local/bin/check-cert-expiry.sh"
+
 db-update: certs ## apply pending EF migrations
 	ConnectionStrings__IndustrialDb="Host=localhost;Port=5432;Database=industrial_db;Username=admin;Password=password;SSL Mode=VerifyFull;Root Certificate=$(CURDIR)/certs/dev-ca.crt" dotnet ef database update --project src/Industrial.Diagnostics.Worker
 

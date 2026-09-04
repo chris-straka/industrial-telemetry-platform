@@ -55,8 +55,11 @@ Remaining work:
   and pgAdmin have no application authentication beyond loopback binding, and OTLP
   ingestion has none by protocol. Still open: per-user identity and secrets for
   those surfaces;
-- replace the development CA bootstrap with managed enrollment, renewal, rotation, revocation, and
-  audit; and
+- the development CA lifecycle is now documented in [CA-lifecycle](docs/CA-lifecycle.md):
+  stable leaves with 7-day renewal, restart-based rotation (live reload only for
+  the gateway allowlist), no per-device sensor revocation, and `make certs-check`
+  expiry auditing. Still open: replace the bootstrap with managed enrollment,
+  renewal, rotation, revocation, and audit; and
 - the gateway allowlist now reloads on a timer (`TransportSecurity:AllowlistReloadIntervalSeconds`,
   30s by default, 5s in the e2e project), so removing a fingerprint revokes that gateway
   without restarting ingestion; a malformed edit keeps the previous snapshot. Proven by unit

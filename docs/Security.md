@@ -65,9 +65,10 @@ without changing the trust decision for other allowlisted gateways. The isolated
 checks that a TLS request without the gateway certificate is rejected.
 
 The policy disables certificate downloads and does not consult CRLs or OCSP. The explicit
-fingerprint list is the demonstrated revocation mechanism, and it is loaded at process startup—not
-watched for live changes. Those are deliberate limits of this local example, not a complete device
-certificate lifecycle.
+fingerprint list is the demonstrated revocation mechanism, and it is reloaded on a
+timer without a restart. Those are deliberate limits of this local example, not a complete device
+certificate lifecycle. The full rotation/revocation/audit story lives in
+[CA-lifecycle](CA-lifecycle.md).
 
 # Kubernetes chart
 
