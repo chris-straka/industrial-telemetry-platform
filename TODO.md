@@ -100,10 +100,13 @@ collector outage). Retention budgets are explicit: Prometheus two weeks or two g
 Loki and Tempo one week each. Every rule carries a `follow_up` annotation naming its concrete
 next hop (quarantine view, DLQ topic, backlog panel, logs).
 
-Still open: the thresholds themselves are engineering defaults, not measured service-level
-objectives. Run sustained load and outage drills to tune histogram buckets, p95/p99 thresholds,
-and `for` windows; then re-verify a full firing drill an operator follows from the alert
-through metrics, logs, traces, quarantine, and the DLQ.
+Measured so far (see [Alert-tuning](docs/Alert-tuning.md)): an ingestion outage pages the
+operator inbox in 2m51s via `EdgeCloudUnreachable`, resolves with a drained queue on restore,
+and a 6-row restart backlog clears without tripping `AlertOutboxBacklogged` — so those windows
+stay as they are. The slow-burn and load-dependent rules (10m-deriv growth, p95/p99 lag,
+histogram buckets, sensor-drop thresholds) are still engineering defaults: they need a
+sustained load drill and a >15-minute outage, then a re-verified full firing drill an operator
+follows from the alert through metrics, logs, traces, quarantine, and the DLQ.
 
 ## 5. Optional cleanup and measurement
 
