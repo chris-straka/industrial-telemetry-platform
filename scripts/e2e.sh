@@ -261,6 +261,23 @@ outbox_is_published() {
     )" = '1' ]
 }
 
+outbox_attempt_count() {
+    message_id=$1
+    query_db \
+        "SELECT COALESCE(MAX(\"AttemptCount\"), -1) FROM \"AlertOutboxMessages\" WHERE \"MessageId\" = '$message_id'::uuid;" \
+        2>/dev/null || true
+}
+
+outbox_failed_then_pending() {
+    message_id=$1
+    attempts="$(outbox_attempt_count "$message_id")"
+    case "$attempts" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$attempts" -ge 1 ] && ! outbox_is_published "$message_id"
+}
+
+
 log "Validating isolated Compose model"
 compose config --quiet
 printf 'Compose project: %s\n' "$E2E_PROJECT_NAME"
@@ -373,7 +390,9 @@ esac
 
 log 'Stopping Kafka and checking the alert outbox survives until broker recovery'
 compose stop --timeout 15 kafka
-OUTBOX_PAYLOAD="{\"messageId\":\"$OUTBOX_MESSAGE_ID\",\"equipmentId\":\"E2E-OUTBOX\",\"occurredAt\":\"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\",\"engineTemperature\":80.0,\"diagnostics\":\"e2e recovery\"}"
+# PascalCase keys match TelemetryAlertEnvelope as the real producer serializes it.
+# Anything else would not bind on read and must publish through unchanged.
+OUTBOX_PAYLOAD="{\"MessageId\":\"$OUTBOX_MESSAGE_ID\",\"EquipmentId\":\"E2E-OUTBOX\",\"OccurredAt\":\"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\",\"EngineTemperature\":80.0,\"Diagnostics\":\"e2e recovery\"}"
 query_db \
     "INSERT INTO \"AlertOutboxMessages\" (\"Id\", \"MessageId\", \"EquipmentId\", \"Payload\", \"TraceParent\", \"CreatedAt\", \"PublishedAt\", \"AttemptCount\", \"LastError\") VALUES ('66666666-6666-4666-8666-666666666666'::uuid, '$OUTBOX_MESSAGE_ID'::uuid, 'E2E-OUTBOX', '$OUTBOX_PAYLOAD', NULL, NOW(), NULL, 0, NULL);" \
     >/dev/null
@@ -386,5 +405,64 @@ wait_for_container_health kafka "$STARTUP_TIMEOUT"
 wait_until 'outbox row to publish after Kafka recovery' 90 \
     outbox_is_published "$OUTBOX_MESSAGE_ID"
 
+log 'Freezing Kafka mid-publish to manufacture an ambiguous acknowledgement'
+AMBIG_OUTBOX_MESSAGE_ID='77777777-7777-4777-8777-777777777777'
+AMBIG_OUTBOX_PAYLOAD="{\"MessageId\":\"$AMBIG_OUTBOX_MESSAGE_ID\",\"EquipmentId\":\"E2E-AMBIG\",\"OccurredAt\":\"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\",\"EngineTemperature\":80.0,\"Diagnostics\":\"e2e ambiguous ack\"}"
+KAFKA_CONTAINER="$(compose ps -q kafka)"
+if [ -z "$KAFKA_CONTAINER" ]; then
+    fail 'Kafka container id is unknown; cannot freeze the broker'
+fi
+# Freeze first so the publisher's produce blocks against a broker that may
+# already hold the request. Unlike the stopped-broker test above, the client
+# failure here cannot prove the broker has nothing: the bytes may sit in the
+# frozen broker's TCP buffer and be appended once it thaws. That unknown is
+# exactly what makes the acknowledgement ambiguous.
+docker pause "$KAFKA_CONTAINER" >/dev/null
+query_db \
+    "INSERT INTO \"AlertOutboxMessages\" (\"Id\", \"MessageId\", \"EquipmentId\", \"Payload\", \"TraceParent\", \"CreatedAt\", \"PublishedAt\", \"AttemptCount\", \"LastError\") VALUES ('88888888-8888-4888-8888-888888888888'::uuid, '$AMBIG_OUTBOX_MESSAGE_ID'::uuid, 'E2E-AMBIG', '$AMBIG_OUTBOX_PAYLOAD', NULL, NOW(), NULL, 0, NULL);" \
+    >/dev/null
+# The shared producer times out after 20s, so a failed-but-still-pending row
+# proves the client gave up without knowing whether the broker persisted it.
+wait_until 'outbox produce to fail ambiguously while Kafka is frozen' 90 \
+    outbox_failed_then_pending "$AMBIG_OUTBOX_MESSAGE_ID"
+docker unpause "$KAFKA_CONTAINER" >/dev/null
+wait_for_container_health kafka "$STARTUP_TIMEOUT"
+
+log 'Checking the ambiguous publish still delivers at least once without duplicating Postgres rows'
+wait_until 'ambiguous outbox row to publish after the broker thaws' 90 \
+    outbox_is_published "$AMBIG_OUTBOX_MESSAGE_ID"
+# Poll the topic directly instead of wait_until so a failure reports the last
+# consumer output instead of only a timeout.
+alert_deadline=$((SECONDS + 60))
+while true; do
+    AMBIG_CONSUMER_OUTPUT="$(
+        compose exec -T kafka \
+            /opt/kafka/bin/kafka-console-consumer.sh \
+            --bootstrap-server kafka:9092 \
+            --topic telemetry-alerts \
+            --from-beginning --timeout-ms 15000 \
+            2>&1 || true
+    )"
+    AMBIG_ALERT_COUNT="$(printf '%s' "$AMBIG_CONSUMER_OUTPUT" | grep -c "$AMBIG_OUTBOX_MESSAGE_ID" || true)"
+    case "$AMBIG_ALERT_COUNT" in
+        ''|*[!0-9]*) AMBIG_ALERT_COUNT=0 ;;
+    esac
+    if [ "$AMBIG_ALERT_COUNT" -ge 1 ]; then
+        break
+    fi
+    if [ "$SECONDS" -ge "$alert_deadline" ]; then
+        printf 'Last telemetry-alerts consumer output:\n%s\n' "$AMBIG_CONSUMER_OUTPUT" >&2
+        fail "ambiguous alert to reach telemetry-alerts did not become true within 60s (last count: $AMBIG_ALERT_COUNT)"
+    fi
+    sleep 2
+done
+printf 'Ambiguous-ACK alert copies in telemetry-alerts for %s: %s (at-least-once requires >= 1).\n' \
+    "$AMBIG_OUTBOX_MESSAGE_ID" "$AMBIG_ALERT_COUNT"
+printf 'Every copy shares one MessageId, which is the key the dashboard dedupes on (bounded remember() set plus key={MessageId}), so replays render a single item.\n'
+wait_until 'earlier telemetry rows to remain exactly once after the ambiguous publish' 60 \
+    database_has_unique_ids 3 "$READING_IDS_SQL"
+wait_until 'rewound telemetry row to remain exactly once after the ambiguous publish' 60 \
+    database_has_unique_ids 1 "'$MESSAGE_ID_4'::uuid"
+
 log 'All failure/recovery assertions passed'
-printf 'Verified 4 telemetry MessageIds, one DLQ record, and one recovered outbox publish.\n'
+printf 'Verified 4 telemetry MessageIds, one DLQ record, one recovered outbox publish, and one ambiguous-ACK outbox recovery.\n'

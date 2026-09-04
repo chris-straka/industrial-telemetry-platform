@@ -10,10 +10,13 @@ and verifies ingestion/gateway restart recovery, Postgres consumer retry, a dura
 DLQ copy, alert-outbox recovery after a Kafka outage, and rejection of a TLS client without the
 gateway certificate. It does not use the normal development project's containers or data.
 
-Still add controlled fault injection for an ambiguous Kafka acknowledgement, then prove the
-resulting replay remains one Postgres row and one rendered dashboard item per `MessageId`. The
-current harness verifies server-side idempotency after ordinary retry, but it does not drive a real
-browser or manufacture an ACK-after-write connection failure.
+`scripts/e2e.sh` now also freezes the broker with `docker pause` while an outbox produce is
+in flight, manufacturing an ambiguous acknowledgement: the client times out without knowing
+whether the broker persisted the request. The harness then proves the alert still arrives
+at least once in `telemetry-alerts`, every copy shares one `MessageId` (the dashboard's
+dedupe key), and Postgres still holds exactly one row per submitted ID. The harness does not
+drive a real browser; render-side dedupe rests on the dashboard's bounded `remember()` set plus
+`key={MessageId}`, covered by frontend lint and build.
 
 ## 2. Complete authentication and transport security
 
@@ -56,10 +59,16 @@ Compose now provisions a checked-in Grafana dashboard, Prometheus alert rules, a
 for Prometheus, Loki, Tempo, and Grafana. The rules deliberately cover permanent sensor drops,
 gateway backlog/rejections, diagnostics retries/DLQ failures, and the alert outbox.
 
-The current thresholds are engineering defaults, not measured service-level objectives. Run
-sustained load and outage drills to tune histogram buckets, p95/p99 thresholds, and `for` windows;
-choose retention and disk budgets; then add an Alertmanager notification route and verify an
-operator can follow a firing alert through metrics, logs, traces, quarantine, and the DLQ.
+The notification route now exists: Prometheus forwards firing alerts to Alertmanager, which
+groups by alert and component and emails a local MailHog inbox (verified end to end with a
+collector outage). Retention budgets are explicit: Prometheus two weeks or two gigabytes,
+Loki and Tempo one week each. Every rule carries a `follow_up` annotation naming its concrete
+next hop (quarantine view, DLQ topic, backlog panel, logs).
+
+Still open: the thresholds themselves are engineering defaults, not measured service-level
+objectives. Run sustained load and outage drills to tune histogram buckets, p95/p99 thresholds,
+and `for` windows; then re-verify a full firing drill an operator follows from the alert
+through metrics, logs, traces, quarantine, and the DLQ.
 
 ## 5. Optional cleanup and measurement
 

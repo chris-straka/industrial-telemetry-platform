@@ -9,6 +9,7 @@ groups:
                 component: observability
             annotations:
                 summary: Prometheus cannot scrape the OpenTelemetry Collector
+                follow_up: "Check otel-collector logs and its exporter; application alerts have no input until this scrape recovers."
                 description: >-
                     The single metrics aggregation endpoint has been unreachable for two minutes.
                     Application alert expressions may have no input while this scrape is down.
@@ -23,6 +24,7 @@ groups:
                 component: sensor-emulator
             annotations:
                 summary: Sensor acquisition is dropping readings
+                follow_up: "Check sensor-emulator logs and the channel-depth panel; acquisition drops are permanent pre-gateway loss by design."
                 description: >-
                     The bounded in-memory acquisition channel dropped readings during the last
                     10 minutes. This is intentional best-effort behavior, but it is permanent
@@ -36,6 +38,7 @@ groups:
                 component: sensor-emulator
             annotations:
                 summary: Sensor delivery policies are expiring
+                follow_up: "Check gateway reachability and edge 429 rate; expired delivery policies are permanent loss by design."
                 description: >-
                     Dequeued sensor readings exhausted their bounded HTTP delivery policy without
                     receiving a gateway 202. These readings are permanently lost by design.
@@ -47,6 +50,7 @@ groups:
                 component: edge-gateway
             annotations:
                 summary: Edge gateways are shedding new readings
+                follow_up: "Check the Durable Edge Backlog panel and restore ingestion; sustained shedding becomes permanent sensor-side loss."
                 description: >-
                     A gateway reached its durable buffer ceiling and returned 429. Sensor retries
                     are bounded, so continued shedding can become permanent sensor-side loss.
@@ -58,6 +62,7 @@ groups:
                 component: edge-gateway
             annotations:
                 summary: Cloud permanently rejected edge readings
+                follow_up: "Inspect GET http://edge-gateway:8080/buffer/quarantine?limit=100 for the rejected payloads and reasons."
                 description: >-
                     Ingestion explicitly rejected one or more durable gateway rows. The gateway
                     removed them from the live queue and retained their payloads in quarantine
@@ -71,6 +76,7 @@ groups:
                 component: edge-gateway
             annotations:
                 summary: Edge gateways are receiving sustained malformed traffic
+                follow_up: "Check edge-gateway logs for the rejected shapes; verify sensor firmware, clock, identity, and schema bounds."
                 description: >-
                     More than one invalid reading every ten seconds has been rejected at the edge
                     for ten minutes. Check sensor firmware, clock, identity, and schema bounds.
@@ -85,6 +91,7 @@ groups:
                 component: edge-gateway
             annotations:
                 summary: An edge gateway cannot reach ingestion
+                follow_up: "Check ingestion health and the Edge Queue Health panel; the SQLite queue absorbs the outage while it lasts."
                 description: >-
                     At least one gateway's latest upload attempt could not reach the cloud. The
                     durable SQLite queue should absorb the outage, but queue age must be watched.
@@ -97,6 +104,7 @@ groups:
                 component: edge-gateway
             annotations:
                 summary: Edge queue has readings older than five minutes
+                follow_up: "Check the oldest-age trend and restore ingestion before the buffer ceiling starts shedding new readings."
                 description: >-
                     The oldest unacknowledged reading has remained over five minutes old. Delivery
                     is behind even if the latest connectivity probe currently succeeds.
@@ -109,6 +117,7 @@ groups:
                 component: edge-gateway
             annotations:
                 summary: Edge queue has readings older than thirty minutes
+                follow_up: "Restore ingestion now; then inspect the quarantine view and the oldest-age trend for how far behind delivery fell."
                 description: >-
                     The durable edge queue is severely delayed. Restore ingestion before the
                     configured buffer ceiling causes gateway admission to shed new readings.
@@ -121,6 +130,7 @@ groups:
                 component: edge-gateway
             annotations:
                 summary: Edge backlog is growing while ingestion is unreachable
+                follow_up: "Compare queue depth against the buffer ceiling and restore ingestion before admission starts shedding."
                 description: >-
                     Queue depth has a positive ten-minute slope while a gateway reports the cloud
                     unreachable. Capacity exhaustion risk is increasing.
@@ -133,6 +143,7 @@ groups:
                 component: edge-gateway
             annotations:
                 summary: Edge uploads are failing continuously
+                follow_up: "Group edge_upload_failures_total by outcome label and follow a failing batch through traces."
                 description: >-
                     Upload attempts have failed at more than one every twenty seconds for ten
                     minutes. Inspect the outcome label and correlated traces.
@@ -151,6 +162,7 @@ groups:
                 component: ingestion-api
             annotations:
                 summary: Ingestion API is returning server errors
+                follow_up: "Check ingestion-api logs and traces; gateway rows stay durable until ingestion names them accepted or rejected."
                 description: >-
                     The ingestion API has returned HTTP 5xx responses continuously for five
                     minutes. Gateway rows remain durable unless ingestion explicitly names them
@@ -174,6 +186,7 @@ groups:
                 component: ingestion-api
             annotations:
                 summary: Ingestion API error ratio exceeds five percent
+                follow_up: "Check ingestion-api logs and traces for the failing route; watch the edge backlog while it recovers."
                 description: >-
                     More than five percent of measured ingestion HTTP requests have returned a
                     server error over the last ten minutes.
@@ -188,6 +201,7 @@ groups:
                 component: diagnostics-worker
             annotations:
                 summary: Diagnostics processing is repeatedly rewinding Kafka records
+                follow_up: "Check diagnostics-worker logs for the rewound record; verify Postgres availability and model state."
                 description: >-
                     Failed records are being sought and retried at more than one attempt every
                     twenty seconds. Postgres, model, or transaction failures may be blocking a
@@ -200,6 +214,7 @@ groups:
                 component: diagnostics-worker
             annotations:
                 summary: Diagnostics moved poison records to the dead-letter topic
+                follow_up: "Read the payloads in topic telemetry-events-dlq, fix the producer, and confirm the source offsets advanced."
                 description: >-
                     Malformed or otherwise deterministic poison records were durably published to
                     the diagnostics DLQ before their source offsets were committed. Inspect and
@@ -212,6 +227,7 @@ groups:
                 component: diagnostics-worker
             annotations:
                 summary: Diagnostics cannot publish a poison record to the DLQ
+                follow_up: "Check Kafka health; the source partition cannot advance until the DLQ copy is acknowledged."
                 description: >-
                     A dead-letter write failed or had an ambiguous acknowledgement. The source
                     offset remains uncommitted, so its Kafka partition may be unable to advance.
@@ -227,6 +243,7 @@ groups:
                 component: diagnostics-worker
             annotations:
                 summary: Diagnostics persistence lag p95 exceeds five minutes
+                follow_up: "Check the edge backlog, Kafka consumer lag, Postgres health, and the End-to-End Persistence Lag panel."
                 description: >-
                     At least five percent of persisted readings are arriving more than five
                     minutes after acquisition. Check edge backlog, Kafka lag, and Postgres health.
@@ -241,6 +258,7 @@ groups:
                 component: diagnostics-worker
             annotations:
                 summary: Alert outbox has remained non-empty
+                follow_up: "Check the telemetry-alerts topic, the publisher logs, and the Alert Outbox panel; rows stay durable in Postgres."
                 description: >-
                     One or more anomaly alerts have remained unpublished for ten minutes. The
                     durable Postgres outbox prevents loss, but live dashboard delivery is delayed.
@@ -253,6 +271,7 @@ groups:
                 component: diagnostics-worker
             annotations:
                 summary: Alert outbox contains at least one hundred pending alerts
+                follow_up: "Restore the alerts topic and verify the outbox publisher; rows stay durable in Postgres while delivery is behind."
                 description: >-
                     Alert publication is substantially behind. Restore the alert Kafka topic and
                     verify the outbox publisher before the backlog continues to grow.
@@ -265,6 +284,7 @@ groups:
                 component: diagnostics-worker
             annotations:
                 summary: Alert outbox publication is failing
+                follow_up: "Check Kafka availability and publisher logs; failed rows remain pending and retry with backoff."
                 description: >-
                     Kafka has not durably acknowledged one or more alert publication attempts.
                     Rows remain pending and will be retried.

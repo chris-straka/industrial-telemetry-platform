@@ -360,12 +360,13 @@ services:
       - |
         chown -R 10001:10001 /loki /tempo
         chown -R 472:0 /grafana
-        chown -R 65534:65534 /prometheus
+        chown -R 65534:65534 /prometheus /alertmanager
     volumes:
       - loki_data:/loki
       - tempo_data:/tempo
       - grafana_data:/grafana
       - prometheus_data:/prometheus
+      - alertmanager_data:/alertmanager
 
   loki:
     image: grafana/loki:3.7.2
@@ -387,9 +388,40 @@ services:
       - prometheus_data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
+    # Demo retention budget: two weeks or two gigabytes, whichever binds first.
+    # This is a disk ceiling for local history, not a production backup policy.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=2GB
     depends_on:
       observability-storage-init:
         condition: service_completed_successfully
+
+  # Receives Prometheus alerts and emails them to the local MailHog inbox.
+  # Clustering is disabled: a single demo instance has no peers to gossip with.
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    volumes:
+      - ./monitoring/alertmanager.yaml:/etc/alertmanager/alertmanager.yaml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yaml
+      - --storage.path=/alertmanager
+      - --cluster.listen-address=
+    depends_on:
+      observability-storage-init:
+        condition: service_completed_successfully
+
+  # Local SMTP sink and inbox UI for Alertmanager mail. The operator reads
+  # firing alerts at http://localhost:8025; nothing leaves this machine.
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    ports:
+      - "127.0.0.1:8025:8025"
 
   tempo:
     image: grafana/tempo:3.0.2
@@ -433,6 +465,7 @@ volumes:
   prometheus_data:
   tempo_data:
   grafana_data:
+  alertmanager_data:
   dev_pki_authority_data:
   ingestion_tls_data:
   edge_gateway_tls_data:

@@ -3,6 +3,14 @@ global:
     scrape_timeout: 10s
     evaluation_interval: 30s
 
+# Firing alerts go to the local Alertmanager, which routes them to MailHog.
+# Prometheus retries delivery, so a brief Alertmanager restart delays rather
+# than drops notifications.
+alerting:
+    alertmanagers:
+        - static_configs:
+              - targets: ["alertmanager:9093"]
+
 rule_files:
     - /etc/prometheus/rules/*.yaml
 

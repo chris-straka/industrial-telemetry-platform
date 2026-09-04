@@ -27,3 +27,15 @@ schema_config:
 
 limits_config:
   allow_structured_metadata: true
+  # Demo retention budget: one week of logs. The compactor enforces it; without
+  # retention_enabled the filesystem store keeps everything until the disk fills.
+  retention_period: 168h
+
+compactor:
+    working_directory: /tmp/loki/compactor
+    compaction_interval: 10m
+    retention_enabled: true
+    retention_delete_delay: 2h
+    # The filesystem store needs an explicit delete-request store before Loki
+    # accepts retention_enabled at all (flag -compactor.delete-request-store).
+    delete_request_store: filesystem

@@ -243,7 +243,7 @@ public sealed class AlertOutboxPublisherWorker(
         return JsonSerializer.Serialize(alert with { Diagnostics = aiAdvice });
     }
 
-    private static bool TryReadPendingEnrichment(
+    internal static bool TryReadPendingEnrichment(
         string payload,
         out TelemetryAlertEnvelope? alert
     )
@@ -251,7 +251,16 @@ public sealed class AlertOutboxPublisherWorker(
         try
         {
             alert = JsonSerializer.Deserialize<TelemetryAlertEnvelope>(payload);
-            return alert is not null && string.IsNullOrEmpty(alert.Diagnostics);
+
+            // Enrichment rewrites the payload, so it must only run on a row this process
+            // actually wrote: a pending marker (empty Diagnostics) with its identity intact.
+            // Anything else publishes unchanged. In particular, a payload whose keys do not
+            // bind (for example legacy casing) deserializes with null identity, and
+            // re-serializing it would bake that loss in as MessageId:null.
+            return alert is not null
+                && string.IsNullOrEmpty(alert.Diagnostics)
+                && !string.IsNullOrEmpty(alert.MessageId)
+                && !string.IsNullOrEmpty(alert.EquipmentId);
         }
         catch (JsonException)
         {

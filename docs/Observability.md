@@ -139,8 +139,9 @@ The local stack is configured from checked-in artifacts rather than clicks in th
 | artifact | purpose |
 | --- | --- |
 | `monitoring/otel-collector-config.yaml` | receives OTLP and batches metrics to Prometheus, logs to Loki, and traces to Tempo |
-| `monitoring/prometheus.yaml` | scrapes the collector exporter and loads rule files |
-| `monitoring/prometheus-alerts.yaml` | alerts on permanent loss, edge backlog, ingestion errors, diagnostics retry/DLQ failure, and alert-outbox backlog |
+| `monitoring/prometheus.yaml` | scrapes the collector exporter, loads rule files, and forwards firing alerts to Alertmanager |
+| `monitoring/prometheus-alerts.yaml` | alerts on permanent loss, edge backlog, ingestion errors, diagnostics retry/DLQ failure, and alert-outbox backlog; every rule carries a `follow_up` next hop |
+| `monitoring/alertmanager.yaml` | groups firing alerts by alert and component and emails them to the local MailHog inbox |
 | `monitoring/grafana-datasources.yaml` | provisions Prometheus, Loki, and Tempo plus trace-to-log navigation |
 | `monitoring/grafana-dashboard-provider.yaml` | loads dashboards from disk |
 | `monitoring/grafana-dashboard-industrial-platform.json` | the `Industrial Platform Reliability` dashboard |
@@ -152,14 +153,22 @@ gateway. DLQ and edge-quarantine panels show different poison paths: diagnostics
 poison records to `telemetry-events-dlq`, while the gateway retains deterministic cloud rejections
 in bounded SQLite forensic storage.
 
-Prometheus, Loki, Tempo, and Grafana use named Compose volumes, so ordinary container restarts keep
-local history. `docker compose down -v` intentionally removes those volumes. This is demo
-persistence, not a production retention or backup policy.
+Prometheus, Loki, Tempo, Grafana, and Alertmanager use named Compose volumes, so ordinary
+container restarts keep local history. `docker compose down -v` intentionally removes those
+volumes. Explicit demo retention budgets cap disk use: Prometheus keeps two weeks or two
+gigabytes (whichever binds first), Loki and Tempo keep one week each. This is demo persistence,
+not a production retention or backup policy.
 
-The Prometheus rules currently have no Alertmanager notification route, and their thresholds are
-engineering defaults rather than measured SLOs. Before claiming operational readiness, exercise
-them under sustained load and outages, tune the histogram buckets and evaluation windows, set disk
-retention budgets, and verify that a human receives and can follow a firing alert.
+Firing alerts route through Alertmanager to a local MailHog inbox (`http://localhost:8025`),
+grouped by alert and component with critical and warning receivers. The route was verified by
+stopping the collector and watching `OpenTelemetryCollectorScrapeDown` travel from Prometheus
+to the inbox. Production keeps the routing shape and swaps the MailHog receivers for real
+paging endpoints.
+
+Alert thresholds are still engineering defaults rather than measured SLOs. Before claiming
+operational readiness, exercise the stack under sustained load and outages to tune the
+histogram buckets, p95/p99 thresholds, and `for` windows, then re-verify a full firing drill
+an operator can follow from the alert through metrics, logs, traces, quarantine, and the DLQ.
 
 # Liveness and readiness
 

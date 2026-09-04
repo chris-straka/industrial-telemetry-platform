@@ -20,3 +20,16 @@ storage:
         # restart cannot discard traces which have not yet been flushed into local blocks.
         wal:
             path: /tmp/tempo/wal
+
+# Demo retention budget: one week of traces. Tempo 3.x replaced the compactor
+# with a backend scheduler plus worker, so the same budget is set on both.
+# Flag paths: -backend-scheduler.provider.work.compaction.block-retention and
+# -backend-worker.compaction.block-retention (defaults 336h).
+backend_scheduler:
+    provider:
+        compaction:
+            compaction:
+                block_retention: 168h
+backend_worker:
+    compaction:
+        block_retention: 168h

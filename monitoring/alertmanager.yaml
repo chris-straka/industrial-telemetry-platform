@@ -1,0 +1,33 @@
+# Alertmanager routes Prometheus alerts to the local operator inbox (MailHog).
+# This is a development route, not production paging: every notification lands
+# in MailHog at http://localhost:8025 instead of waking anyone up. Production
+# keeps this file's routing shape and swaps the receivers for real endpoints.
+global:
+    smtp_smarthost: "mailhog:1025"
+    smtp_from: "alerts@industrial-platform.local"
+    smtp_require_tls: false
+
+# One digest per alert per component. Short group_wait so the first demonstration
+# email arrives promptly; the 4h repeat keeps a sustained outage to ~6 mails a day.
+route:
+    group_by: ["alertname", "component"]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+    receiver: warning-inbox
+    routes:
+        - matchers:
+              - severity = critical
+          receiver: critical-inbox
+
+receivers:
+    - name: warning-inbox
+      email_configs:
+          - to: "operator@industrial-platform.local"
+            headers:
+                Subject: "[warning] {{ .GroupLabels.alertname }} ({{ .GroupLabels.component }})"
+    - name: critical-inbox
+      email_configs:
+          - to: "operator@industrial-platform.local"
+            headers:
+                Subject: "[CRITICAL] {{ .GroupLabels.alertname }} ({{ .GroupLabels.component }})"
