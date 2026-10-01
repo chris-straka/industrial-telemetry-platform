@@ -17,8 +17,8 @@ public sealed class BufferSettlementStore(
 {
     public const string CloudRejectionCode = "cloud_permanent_rejection";
 
-    // UploadTelemetryResponse carries rejected IDs but no per-reading reason or error code. Store
-    // that limitation explicitly instead of inventing a diagnosis that the edge cannot know.
+    // UploadTelemetryResponse names rejected IDs without a per-reading reason or error code, so
+    // the stored reason states only what the edge actually knows.
     public const string CloudRejectionReason =
         "Ingestion named this MessageId as permanently rejected; the current protocol does not provide a per-reading reason.";
 
@@ -75,9 +75,9 @@ public sealed class BufferSettlementStore(
             );
             db.QuarantinedTelemetryRecords.AddRange(
                 rejectedRows
-                    // Older versions could re-admit an ID after its settled marker expired while
-                    // its longer-lived quarantine row remained. Preserve the first forensic copy
-                    // and still let that already-queued duplicate settle instead of wedging here.
+                    // A buffer written by an earlier build can hold a queued duplicate of an ID
+                    // that is already quarantined. Keep the first forensic copy and let the
+                    // duplicate settle so it does not block the queue.
                     .Where(row => !alreadyQuarantinedIds.Contains(row.MessageId))
                     .Select(row => new QuarantinedTelemetryRecord
                     {
@@ -118,8 +118,8 @@ public sealed class BufferSettlementStore(
                 cancellationToken
             );
 
-            // The time bound controls usefulness; this hard count bound controls disk growth even
-            // during a sustained rejection storm. SQLite reuses the pages released by this delete.
+            // The age bound keeps rows relevant. This count bound caps disk use during a sustained
+            // run of rejections. SQLite reuses the pages this delete frees.
             var quarantineCount = await db.QuarantinedTelemetryRecords.CountAsync(
                 cancellationToken
             );
@@ -142,8 +142,8 @@ public sealed class BufferSettlementStore(
 
             await transaction.CommitAsync(cancellationToken);
 
-            // The in-memory depth mirrors only live queue rows. Release after the durable commit;
-            // startup recount repairs it if the process dies between those two operations.
+            // The in-memory depth tracks only live queue rows, so release after the durable commit.
+            // If the process dies in between, the startup recount repairs it.
             bufferDepth.Release(settledRows.Count);
         }
         finally

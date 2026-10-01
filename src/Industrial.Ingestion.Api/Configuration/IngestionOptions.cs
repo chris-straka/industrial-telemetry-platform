@@ -10,9 +10,8 @@ public class KafkaOptions : IValidatableObject
     [Required(AllowEmptyStrings = false)]
     public string BootstrapServers { get; set; } = string.Empty;
 
-    // Mutual TLS: the broker proves its identity via the dev CA (hostname
-    // verification stays on), and this workload presents its own client certificate.
-    // The broker requires a dev-CA-chained client cert before any API call.
+    // Enables mutual TLS. The broker is verified against the dev CA with hostname verification
+    // on, and the broker requires this client's dev-CA-signed certificate before any API call.
     public bool UseTls { get; set; }
 
     public string SslCaLocation { get; set; } = string.Empty;

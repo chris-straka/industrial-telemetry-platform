@@ -44,7 +44,7 @@ builder
     )
     .ValidateOnStart();
 
-// Needed during registration, before the container exists.
+// Bound directly because service registration runs before the service provider exists.
 var otel = builder.Configuration.GetSection(OTelOptions.Section).Get<OTelOptions>()!;
 var kafka = builder.Configuration.GetSection(KafkaOptions.Section).Get<KafkaOptions>()!;
 var cors = builder.Configuration.GetSection(CorsOptions.Section).Get<CorsOptions>()!;
@@ -105,8 +105,8 @@ builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        // CORS
-        policy.WithOrigins(cors.Origins).AllowAnyHeader().AllowAnyMethod().AllowCredentials(); // Required for SignalR
+        // The SignalR browser client sends credentials by default, so CORS must allow them.
+        policy.WithOrigins(cors.Origins).AllowAnyHeader().AllowAnyMethod().AllowCredentials();
     });
 });
 
@@ -129,7 +129,7 @@ app.Run();
 
 public interface ITelemetryClient
 {
-    // These method names must match what the Frontend listens for
+    // These method names must match the handlers the dashboard registers.
     Task telemetry_events(string payload);
     Task telemetry_alerts(string payload);
 }
@@ -157,9 +157,9 @@ public class KafkaSignalRWorker(
             SslKeyLocation = kafka.UseTls ? kafka.SslKeyLocation : null,
             // SignalR clients are local to this process. A shared group would split Kafka
             // partitions across replicas and each browser would see only the subset assigned to
-            // its pod, so every replica deliberately gets its own broadcast subscription.
+            // its pod, so every replica gets its own broadcast subscription.
             GroupId = $"{kafka.GroupId}-{Environment.MachineName}",
-            // Only real-time data for dashboard
+            // The dashboard shows live data only, so a new group skips the backlog.
             AutoOffsetReset = AutoOffsetReset.Latest,
             EnableAutoCommit = true,
             AllowAutoCreateTopics = false,
@@ -204,7 +204,6 @@ public class KafkaSignalRWorker(
                         ]
                     );
 
-                    // Use the Topic name to decide which method to call
                     if (result.Topic == kafka.EventsTopic)
                     {
                         await hubContext.Clients.All.telemetry_events(result.Message.Value);

@@ -10,9 +10,8 @@ public class KafkaOptions : IValidatableObject
     [Required(AllowEmptyStrings = false)]
     public string BootstrapServers { get; set; } = string.Empty;
 
-    // Mutual TLS: the broker proves its identity via the dev CA (hostname
-    // verification stays on), and this workload presents its own client certificate.
-    // The broker requires a dev-CA-chained client cert before any API call.
+    // Enables mutual TLS. The broker is verified against the dev CA with hostname verification
+    // on, and the broker requires this client's dev-CA-signed certificate before any API call.
     public bool UseTls { get; set; }
 
     public string SslCaLocation { get; set; } = string.Empty;
@@ -29,8 +28,8 @@ public class KafkaOptions : IValidatableObject
     [RegularExpression("^[A-Za-z0-9._-]{1,249}$")]
     public string EventsTopic { get; set; } = string.Empty;
 
-    // Web.Api subscribes to this from its own config, so a literal here would leave the
-    // dashboard listening to a topic nothing writes to, with no exception anywhere
+    // Web.Api reads the same topic name from its own config. A hard-coded name here could leave
+    // the dashboard subscribed to a topic nothing writes to, and nothing would fail loudly.
     [Required(AllowEmptyStrings = false)]
     [RegularExpression("^[A-Za-z0-9._-]{1,249}$")]
     public string AlertsTopic { get; set; } = string.Empty;

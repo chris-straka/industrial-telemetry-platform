@@ -47,7 +47,7 @@ builder
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
-// Needed during registration, before the sp container exists.
+// Bound directly because service registration runs before the service provider exists.
 var otel = builder.Configuration.GetSection(OTelOptions.Section).Get<OTelOptions>()!;
 var kafka = builder.Configuration.GetSection(KafkaOptions.Section).Get<KafkaOptions>()!;
 var gemini = builder.Configuration.GetSection(GeminiOptions.Section).Get<GeminiOptions>()!;
@@ -55,7 +55,6 @@ var pgConnectionString = builder.Configuration.GetConnectionString("IndustrialDb
 ArgumentException.ThrowIfNullOrWhiteSpace(pgConnectionString);
 #endregion
 
-// Setup DB
 builder.Services.AddPooledDbContextFactory<AppDbContext>(options =>
     options.UseNpgsql(pgConnectionString)
 );
@@ -88,7 +87,6 @@ builder
 builder.Services.AddSingleton<WorkerMetrics>();
 builder.Services.AddSingleton<DiagnosticsConsumerReadiness>();
 
-// Kafka
 builder.Services.AddSingleton(sp =>
 {
     var logger = sp.GetRequiredService<ILogger<IProducer<string, string>>>();
@@ -143,7 +141,6 @@ builder
         tags: ["ready"]
     );
 
-// Setup AI features
 builder.Services.AddSingleton(
     new ModelEngine(Path.Combine(AppContext.BaseDirectory, "model.zip"))
 );
@@ -155,7 +152,6 @@ builder.Services.AddHostedService<AlertOutboxPublisherWorker>();
 
 var app = builder.Build();
 
-// Migrate on startup for dev
 if (app.Environment.IsDevelopment())
 {
     using var scope = app.Services.CreateScope();

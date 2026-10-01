@@ -3,7 +3,7 @@ using System.Diagnostics.Metrics;
 namespace Industrial.Diagnostics.Worker.Infrastructure;
 
 /// <summary>
-/// The worker's Otel's instruments.
+/// The diagnostics worker's OpenTelemetry instruments.
 /// </summary>
 public sealed class WorkerMetrics : IDisposable
 {
@@ -84,7 +84,6 @@ public sealed class WorkerMetrics : IDisposable
             description: "Readings skipped because the MessageId was already persisted."
         );
 
-        // Distribution of per-reading sensor to DB times (bucketed)
         Lag = _meter.CreateHistogram<double>(
             "worker.telemetry.lag",
             unit: "s",
@@ -103,7 +102,7 @@ public sealed class WorkerMetrics : IDisposable
     public Counter<long> AlertsPublished { get; }
     public Histogram<double> Lag { get; }
 
-    // A method rather than a public counter, so every sample carries the tag
+    // Exposed as a method rather than a counter so every sample carries the detected_by tag.
     public void RecordDuplicate(string detectedBy) =>
         _duplicates.Add(1, new KeyValuePair<string, object?>("detected_by", detectedBy));
 

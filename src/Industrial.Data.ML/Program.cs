@@ -4,7 +4,7 @@ using Microsoft.ML;
 using Microsoft.ML.Data;
 using Microsoft.ML.Transforms.TimeSeries;
 
-// Helper to get the actual folder where this file lives
+// CallerFilePath resolves to this source file, so the output path ignores the working directory.
 string GetSourceDir([CallerFilePath] string path = "") => Path.GetDirectoryName(path)!;
 
 var localDir = GetSourceDir();
@@ -38,18 +38,16 @@ Console.WriteLine($"✅ Model saved to: {modelPath}");
 Console.WriteLine("\n--- Testing Model Locally ---");
 var predictionEngine = model.CreateTimeSeriesEngine<TelemetryData, AnomalyPrediction>(mlContext);
 
-// Warm up the engine with 50 "Normal" points
+// Fill the p-value history with in-range readings before the two checks below.
 for (int i = 0; i < 50; i++)
 {
     float normalWithNoise = 85.0f + (float)(Random.Shared.NextDouble() * 15);
     predictionEngine.Predict(new TelemetryData { EngineTemperature = normalWithNoise });
 }
 
-// Test Normal (Inside the 85-100 range)
 var normalResult = predictionEngine.Predict(new TelemetryData { EngineTemperature = 92.0f });
 Console.WriteLine($"Normal temp (92.0) -> Is Anomaly? {normalResult.Prediction[0] == 1}");
 
-// Test Spike (Way outside the 85-100 range)
 var spikeResult = predictionEngine.Predict(new TelemetryData { EngineTemperature = 250.0f });
 Console.WriteLine($"Spike temp (250.0) -> Is Anomaly? {spikeResult.Prediction[0] == 1}");
 

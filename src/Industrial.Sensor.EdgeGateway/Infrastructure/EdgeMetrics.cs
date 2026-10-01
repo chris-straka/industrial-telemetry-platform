@@ -8,14 +8,11 @@ namespace Industrial.Sensor.EdgeGateway.Infrastructure;
 /// The gateway's OpenTelemetry instruments.
 /// </summary>
 /// <remarks>
-/// A Counter only climbs and is read as a rate; a Gauge is a level that moves both ways
+/// Queue depth and oldest-message age are the gauges that show an outage. Both climb while the
+/// cloud is unreachable and fall as the buffer drains.
 ///
-/// Depth and oldest-message-age are the gauges that make an outage visible
-/// They climb during an outage and drain once there's no more outage
-///
-/// Queue depth is the one value this class does not own, because it also steers load shedding
-/// I don't want application logic to depend on OTel implementation details
-/// It lives in <see cref="BufferDepth"/>, so losing this file costs dashboards, never the ceiling
+/// Queue depth also drives load shedding, so it lives in <see cref="BufferDepth"/> rather than
+/// here. Admission logic does not depend on the telemetry pipeline.
 /// </remarks>
 public sealed class EdgeMetrics : IDisposable
 {
@@ -25,8 +22,8 @@ public sealed class EdgeMetrics : IDisposable
     private readonly Counter<long> _uploadFailures;
     private readonly Histogram<double> _uploadDuration;
 
-    // NaN means nothing is buffered, so there is no age to report
-    // A companion bool would need two volatile reads that can disagree, and this needs one
+    // NaN means nothing is buffered. Encoding that in the value keeps it to one volatile read;
+    // a separate flag could disagree with the age.
     private double _oldestAgeSeconds = double.NaN;
     private int _cloudReachable = 1;
 
@@ -58,7 +55,8 @@ public sealed class EdgeMetrics : IDisposable
             description: "Readings rejected with 429 because the local buffer hit its ceiling."
         );
 
-        // A 400 never reaches edge.telemetry.received, so without this a rejected reading looks like one the sensor never sent
+        // A 400 never reaches edge.telemetry.received. Without this counter, a rejected reading
+        // would look like one the sensor never sent.
         Malformed = _meter.CreateCounter<long>(
             "edge.telemetry.malformed",
             unit: "{reading}",
@@ -71,18 +69,17 @@ public sealed class EdgeMetrics : IDisposable
             description: "Readings dropped because the cloud named them as permanently refused."
         );
 
-        // 403, deliberately not 400: the reading may be well-formed while the sender is
-        // simply not its device. No alert rule watches this counter: it is driven by
-        // unauthenticated input, and paging on attacker-controlled traffic is a self-DoS
-        // primitive. Investigate spikes in the gateway logs instead.
+        // These are 403s rather than 400s, because the reading may be well-formed while the
+        // sender is not its device. No alert watches this counter. Unauthenticated traffic drives
+        // it, so paging on it would let an attacker page the on-call. Check the logs instead.
         IdentityRejected = _meter.CreateCounter<long>(
             "edge.telemetry.identity_rejected",
             unit: "{reading}",
             description: "Readings refused because the sender presented no certificate or one not authorized for the claimed equipment ID."
         );
 
-        // Tagged by outcome, because an unreachable cloud and one refusing this caller
-        // are one climbing line otherwise, and they need different people to fix them
+        // Tagged by outcome because an unreachable cloud and a cloud refusing this caller need
+        // different fixes.
         _uploadFailures = _meter.CreateCounter<long>(
             "edge.upload.failures",
             unit: "{attempt}",
@@ -95,8 +92,7 @@ public sealed class EdgeMetrics : IDisposable
             description: "Duration of one logical gRPC batch attempt, tagged by classified outcome."
         );
 
-        // Observable means OTel calls this at collection time instead of us pushing values
-        // The depth stays owned by BufferDepth, so losing this file costs dashboards, never the ceiling
+        // Observable gauges are sampled at collection time. BufferDepth owns the value.
         _meter.CreateObservableGauge(
             "edge.queue.depth",
             () => bufferDepth.Current,
@@ -111,7 +107,7 @@ public sealed class EdgeMetrics : IDisposable
             description: "Age of the oldest unacknowledged reading. This is the real SLO."
         );
 
-        // A gauge rather than a log line so it can be graphed beside the queue depth
+        // A gauge rather than a log line so it can be graphed beside the queue depth.
         _meter.CreateObservableGauge(
             "edge.cloud.reachable",
             () => Volatile.Read(ref _cloudReachable),
@@ -127,8 +123,7 @@ public sealed class EdgeMetrics : IDisposable
     public Counter<long> Malformed { get; }
     public Counter<long> IdentityRejected { get; }
 
-    // A method rather than a public counter, so every sample carries the tag
-    // An untagged Add from somewhere else would land in the same metric with no outcome at all
+    // Exposed as a method rather than a counter so every sample carries an outcome tag.
     public void RecordUploadFailure(string outcome) =>
         _uploadFailures.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
 
@@ -138,20 +133,20 @@ public sealed class EdgeMetrics : IDisposable
             new KeyValuePair<string, object?>("outcome", outcome)
         );
 
-    // Volatile because the gauge callbacks read these on OTel's collection thread
-    // A plain write can sit in a register the reader never sees, so the dashboard freezes on a stale value
-    // Not Interlocked, which buys indivisible read-modify-write that neither of these does (docs/Concurrency.md)
+    // Volatile because the gauge callbacks read these fields on OTel's collection thread. A plain
+    // write might not become visible to that thread. Interlocked is unnecessary because these are
+    // plain stores, not read-modify-write operations.
     public void SetOldestReadingAge(double seconds) =>
         Volatile.Write(ref _oldestAgeSeconds, seconds);
 
-    // An empty buffer has no oldest reading, which is not the same as one that is zero seconds old
+    // An empty buffer has no oldest reading, which differs from one that is zero seconds old.
     public void NoReadingsBuffered() => Volatile.Write(ref _oldestAgeSeconds, double.NaN);
 
     public void SetCloudReachable(bool reachable) =>
         Volatile.Write(ref _cloudReachable, reachable ? 1 : 0);
 
-    // Yielding nothing leaves a gap in the series
-    // Reporting a zero would draw the same flat line as a reading that arrived this instant
+    // Yielding nothing leaves a gap in the series. A zero would look like a reading that just
+    // arrived.
     private IEnumerable<Measurement<double>> ObserveOldestReadingAge()
     {
         var seconds = Volatile.Read(ref _oldestAgeSeconds);

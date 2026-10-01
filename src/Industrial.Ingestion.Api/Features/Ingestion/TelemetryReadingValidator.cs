@@ -10,7 +10,8 @@ namespace Industrial.Ingestion.Api.Features.Ingestion;
 /// What the cloud requires of a reading before it produces to Kafka.
 /// </summary>
 /// <remarks>
-/// Every rule must be something no retry can fix (failures here delete the reading)
+/// Each rule must describe a defect no retry can fix. A failure here tells the gateway to delete
+/// its durable copy.
 /// </remarks>
 public class TelemetryReadingValidator : AbstractValidator<TelemetryReading>
 {
@@ -26,17 +27,17 @@ public class TelemetryReadingValidator : AbstractValidator<TelemetryReading>
 
     private const int NanosPerSecond = 1_000_000_000;
 
-    // proto3 defaults are either 0 or null
+    // proto3 scalars have no presence, so a missing field arrives as 0 or an empty string.
     public TelemetryReadingValidator()
     {
-        // Diagnostics.Worker dedupes on this too
+        // Downstream hops, including the Postgres unique index, deduplicate on this ID.
         RuleFor(x => x.MessageId)
             .NotEmpty()
             .MaximumLength(36)
             .Must(id => Guid.TryParseExact(id, "D", out _))
             .WithMessage("MessageId must use the canonical GUID format.");
 
-        // The Kafka message key (used for partitions)
+        // Becomes the Kafka message key, which selects the partition.
         RuleFor(x => x.EquipmentId)
             .NotEmpty()
             .MaximumLength(MaxEquipmentIdLength)
@@ -44,7 +45,7 @@ public class TelemetryReadingValidator : AbstractValidator<TelemetryReading>
             .Must(id => id is null || id == id.Trim())
             .WithMessage("EquipmentId cannot have leading or trailing whitespace.");
 
-        // 0 should not be possible (sensors count from 1)
+        // Sensors count from 1, so 0 means the field was missing.
         RuleFor(x => x.SequenceNumber).GreaterThan(0);
 
         RuleFor(x => x.EngineTemperature)
@@ -68,7 +69,7 @@ public class TelemetryReadingValidator : AbstractValidator<TelemetryReading>
             .WithMessage("Traceparent is not a valid W3C trace context.");
     }
 
-    // Filters out values from a broken clock
+    // Rejects instants Timestamp cannot hold, such as values from a broken clock.
     private static bool IsRepresentable(Timestamp? occurredAt) =>
         occurredAt is null
         || (

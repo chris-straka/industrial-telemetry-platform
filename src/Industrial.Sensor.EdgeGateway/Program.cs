@@ -20,17 +20,17 @@ using OpenTelemetry.Trace;
 //
 //   sensor --HTTP--> [ receiver -> SQLite (durable) -> uploader ] --gRPC--> cloud
 //                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-//                      two INDEPENDENT loops, coupled only by disk
+//                      two independent loops, coupled only by disk
 //
-// We send the sensor 202 the moment the reading is on local disk (not on cloud).
-// This decoupling allows the sensor to produce through a cloud outage.
+// The sensor gets its 202 once the reading is on local disk, not once it reaches the cloud,
+// so sensors keep producing through a cloud outage.
 // --------------------------------------------------------------------------------
 
 var builder = WebApplication.CreateBuilder(args);
 
 // A legitimate sensor reading is a few hundred bytes. Bound the HTTP body before JSON binding so
-// ignored properties or whitespace cannot turn the unauthenticated LAN endpoint into a memory and
-// disk pressure primitive.
+// padding or ignored properties cannot use the unauthenticated LAN endpoint to exhaust memory or
+// disk.
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 16 * 1024);
 
 #region config
@@ -65,7 +65,7 @@ builder
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
-// Needed during registration, before the service provider container exists.
+// Bound directly because service registration runs before the service provider exists.
 var otel = builder.Configuration.GetSection(OTelOptions.Section).Get<OTelOptions>()!;
 var cloud = builder.Configuration.GetSection(CloudOptions.Section).Get<CloudOptions>()!;
 var buffer = builder.Configuration.GetSection(BufferOptions.Section).Get<BufferOptions>()!;
@@ -89,10 +89,9 @@ if (
     );
 }
 
-// We're intercepting the conn to set synchronous=FULL for every conn
+// Sets synchronous=FULL on every pooled connection.
 builder.Services.AddSingleton<SqlitePragmaInterceptor>();
 
-// AddDbContext registers EdgeDbContext with a `scoped` DI lifetime
 builder.Services.AddDbContext<EdgeDbContext>(
     (sp, opt) =>
         opt.UseSqlite($"Data Source={buffer.Path}")
@@ -105,7 +104,6 @@ builder.Services.AddSingleton<EdgeMetrics>();
 builder.Services.AddHealthChecks().AddCheck<EdgeReadinessCheck>("sqlite_write");
 builder.Services.AddScoped<BufferSettlementStore>();
 
-// OTel
 builder
     .Services.AddOpenTelemetry()
     .ConfigureResource(r => r.AddService(otel.ServiceName))
@@ -120,12 +118,11 @@ builder
     .WithTracing(t =>
         t.AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation()
-            // upload loop is bg work, autoinstrumentation can't trace it, need 2 add my own
+            // The upload loop is background work that auto-instrumentation cannot see.
             .AddSource(EdgeTracing.SourceName)
             .AddOtlpExporter(opt => opt.Endpoint = new Uri(otel.Endpoint))
     );
 
-// gRPC connection to the cloud (ingestion API).
 var ingestionClient = builder.Services.AddGrpcClient<TelemetryIngestion.TelemetryIngestionClient>(o =>
 {
     o.Address = new Uri(cloud.ApiUrl);
@@ -137,34 +134,32 @@ if (transportSecurity.Enabled)
     );
 }
 
-// Uploads readings from SQLite to the cloud
 builder.Services.AddHostedService<UploaderWorker>();
 
 var app = builder.Build();
 
-// Migrations belong cloud side (see Diagnostics.Worker)
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<EdgeDbContext>();
     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(buffer.Path))!);
 
-    // EnsureCreated (not Migrate), because this DB is transient (but durable)
-    // If the schema changes, we drain it then migrate
+    // EnsureCreated rather than migrations, because this database is a transient queue. Only
+    // Diagnostics.Worker owns EF migrations.
     await db.Database.EnsureCreatedAsync();
 
     // EnsureCreated does not add newly introduced tables to an existing database. These compatible
     // additions preserve already-buffered telemetry across an application upgrade.
     await EdgeDatabaseInitializer.EnsureCompatibleSchemaAsync(db, buffer);
 
-    // WAL will write to a log file first and fold changes into the DB later in a CP
-    // Allows the uploader read and the receiver to write simultaneously
+    // WAL appends to a log and folds changes into the database at checkpoints, so the uploader
+    // can read while the receiver writes. The setting persists in the file header.
     await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
 
     var buffered = await db.TelemetryRecords.CountAsync();
     app.Services.GetRequiredService<BufferDepth>().Initialize(buffered);
     if (buffered > 0)
     {
-        // Anything still left in the DB was written by a previous run (proof of durability)
+        // Rows present at startup were written by a previous run.
         app.Logger.LogInformation(
             "Recovered {Count} unsent readings from the local buffer at {Path}.",
             buffered,

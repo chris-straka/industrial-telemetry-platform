@@ -30,19 +30,19 @@ using OpenTelemetry.Trace;
 //                                        │ Kafka  telemetry-events │
 //                                        └─────────────────────────┘
 //
-// Keying by EquipmentId puts a machine's readings on one kafka partition.
+// Keying by EquipmentId puts a machine's readings on one Kafka partition.
 // The reply sorts every id the gateway sent into:
 //
 //   accepted   the broker acknowledged the write
 //   rejected   this service's validator refused it, so Kafka never saw it
-//   neither    still the gateway's, and it sends it again
+//   neither    the gateway keeps it and retries
 //
-// POST /api/debug/telemetry is a debugging door onto the same topic.
+// POST /api/debug/telemetry is a debug route onto the same topic.
 // --------------------------------------------------------------------------
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Validated at boot, fails fast (config pecking order: docs/NET.md)
+// Options are validated at startup so a bad deployment value fails fast.
 builder
     .Services.AddOptions<OTelOptions>()
     .Bind(builder.Configuration.GetSection(OTelOptions.Section))
@@ -65,8 +65,8 @@ var transportSecurity =
     builder.Configuration.GetSection(TransportSecurityOptions.Section)
         .Get<TransportSecurityOptions>() ?? new TransportSecurityOptions();
 
-// Assigned after the container builds (see below); the Kestrel handshake callback only
-// runs once the server starts, and a null here fails closed.
+// Assigned after the container builds. The Kestrel handshake callback runs only once the server
+// starts, and a null policy rejects the handshake.
 ReloadingClientCertificatePolicy? reloadingPolicy = null;
 
 if (transportSecurity.Enabled)
@@ -79,8 +79,8 @@ if (transportSecurity.Enabled)
         );
     }
 
-    // Fail fast on unreadable trust material, exactly as before. The snapshot is then
-    // wrapped in a reloading policy so revoking a fingerprint is a file edit, not a restart.
+    // Loading now makes unreadable trust material fail startup. The reloading wrapper then
+    // makes revoking a fingerprint a file edit rather than a restart.
     var initialPolicy = ClientCertificatePolicy.Load(
         transportSecurity.TrustedClientCaPath,
         transportSecurity.AllowedClientFingerprintsPath
@@ -123,18 +123,13 @@ builder
 
 builder.Services.AddValidatorsFromAssemblyContaining<TelemetryValidator>();
 
-// Gateway's batch (200 readings) != Kafka's batches
-// One batch of 200 readings -> 200 kafka msgs (if none rejected)
-// Each kafka msg is key -> EquipmentId, value -> JSON envelope
-// These they get batched per partition into record batches
-
-// Setup Kafka
-builder.Services.AddSingleton(sp => // service provider
+// A gateway batch is not a Kafka batch. Each reading becomes its own Kafka message, keyed by
+// EquipmentId with the JSON envelope as its value. librdkafka then groups messages into
+// per-partition record batches.
+builder.Services.AddSingleton(sp =>
 {
-    // Loggers can only write, not read
     var logger = sp.GetRequiredService<ILogger<IProducer<string, string>>>();
 
-    // Hover each of these props for tooltip (librdkafka runs locally)
     var config = new ProducerConfig
     {
         BootstrapServers = kafka.BootstrapServers,
@@ -150,14 +145,13 @@ builder.Services.AddSingleton(sp => // service provider
         LingerMs = 20,
         MessageTimeoutMs = 20_000,
         CompressionType = CompressionType.Zstd,
-        // A typo must fail delivery and leave the gateway row retryable, not create a silent
-        // parallel topic that no consumer reads.
+        // A mistyped topic fails delivery and leaves the gateway row retryable instead of
+        // silently creating a topic no consumer reads.
         AllowAutoCreateTopics = false,
         // MetadataMaxAgeMs = 5000,
     };
 
-    // You want one producer for each message type (only one here)
-    // <string, string> will use Kafka's default UTF-8 serializers
+    // <string, string> uses Kafka's built-in UTF-8 serializers.
     return new ProducerBuilder<string, string>(config)
         .SetErrorHandler((_, e) => logger.LogError("Kafka Producer Error: {Reason}", e.Reason))
         .Build();

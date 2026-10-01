@@ -15,17 +15,17 @@ using Microsoft.Extensions.Options;
 namespace Industrial.Sensor.EdgeGateway.Features.Upload;
 
 /// <summary>
-/// THE SENDER. Drains local SQLite buffer to send readings to the cloud over gRPC.
+/// Drains the local SQLite buffer to the cloud over gRPC.
 /// </summary>
 /// <remarks>
-/// This loop is independent from acquisition (receiver endpoint)
+/// This loop runs independently of the receiver endpoint. It sends readings oldest first and
+/// deletes only the ones the cloud names in its response.
 ///
-/// Delivery is ALO and ambiguous failures re-send. Diagnostics/Postgres dedupes MessageId, while
-/// the live dashboard keeps its own bounded duplicate window.
-/// We send oldest-first ID and delete only the readings the cloud named in its response
+/// Delivery is at-least-once, and ambiguous failures re-send. Postgres deduplicates on MessageId,
+/// and the live dashboard keeps its own bounded duplicate window.
 ///
-/// Doesn't use gRPC's built-in retry policy
-/// It would re-send everything without knowing what persisted
+/// gRPC's built-in retry policy is not used because it would re-send the whole batch without
+/// knowing which readings persisted.
 /// </remarks>
 public class UploaderWorker(
     IServiceScopeFactory scopeFactory,
@@ -37,35 +37,32 @@ public class UploaderWorker(
 {
     #region private_vars
 
-    // How many readings to send to the cloud per request
-    // The more readings -> fewer round trips -> more readings resent on failures
+    // Larger batches mean fewer round trips but more readings re-sent after a failure.
     private readonly int _batchSize = uploaderOptions.Value.BatchSize;
 
-    // How often we check SQLite for new readings to send
-    // It's usually empty, so it's usually how long new readings wait b4 being sent
+    // Poll interval when the buffer is empty, which is usually how long a new reading waits.
     private readonly TimeSpan _idleDelay = TimeSpan.FromMilliseconds(
         uploaderOptions.Value.IdleDelayMs
     );
 
-    // Base wait time for each backoff, doubled for each consecutive failure
+    // Doubled for each consecutive failure.
     private readonly TimeSpan _baseBackoff = TimeSpan.FromSeconds(
         uploaderOptions.Value.BaseBackoffSeconds
     );
 
-    // Where the doubling stops (we don't want it to wait for hours)
     private readonly TimeSpan _maxBackoff = TimeSpan.FromSeconds(
         uploaderOptions.Value.MaxBackoffSeconds
     );
 
-    // How long a batch gets (caps the wait on a hung connection)
+    // Caps the wait on a hung connection.
     private readonly TimeSpan _uploadTimeout = TimeSpan.FromSeconds(
         uploaderOptions.Value.UploadTimeoutSeconds
     );
 
-    // Failures since the last accepted batch (resets to 0)
+    // Failures since the last accepted batch.
     private int _consecutiveFailures;
 
-    // What decides whether an outage logs loudly or quietly
+    // Decides whether an outage logs at warning or debug level.
     private int _consecutiveUnreachable;
 
     #endregion
@@ -82,27 +79,25 @@ public class UploaderWorker(
         {
             try
             {
-                // We're in a BackgroundService (process liftime) so we need scoped deps
+                // A BackgroundService lives for the whole process, so each pass makes a scope
+                // for its scoped dependencies.
                 using var scope = scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<EdgeDbContext>();
                 var settlementStore =
                     scope.ServiceProvider.GetRequiredService<BufferSettlementStore>();
-                // Type created by grpc_csharp_plugin (with .proto's service)
                 var grpcClient =
                     scope.ServiceProvider.GetRequiredService<TelemetryIngestion.TelemetryIngestionClient>();
 
-                // Refreshes depth values for Otel (cloud outage visibility)
                 await RefreshGaugesAsync(db, stoppingToken);
 
-                // SQLite assigns IDs in insert order (lower ID -> older)
+                // SQLite assigns rowids in insert order, so the lowest Id is the oldest reading.
                 var pending = await db
-                    .TelemetryRecords.OrderBy(r => r.Id) // oldest -> youngest
-                    .Take(_batchSize) // take first N rows
+                    .TelemetryRecords.OrderBy(r => r.Id)
+                    .Take(_batchSize)
                     .ToListAsync(stoppingToken);
 
                 if (pending.Count == 0)
                 {
-                    // nothing to send, wait
                     await SafeDelayAsync(_idleDelay, stoppingToken);
                     continue;
                 }
@@ -117,15 +112,14 @@ public class UploaderWorker(
 
                 switch (result.Outcome)
                 {
-                    // All three logged themselves, and none leaves anything safe to delete
+                    // Each of these already logged, and none makes any row safe to delete.
                     case UploadOutcome.Malformed:
                     case UploadOutcome.Unreachable:
                     case UploadOutcome.Refused:
                         await BackoffAsync(stoppingToken);
                         continue;
 
-                    // The cloud settled none of them
-                    // nothing to delete and no reason to hammer it
+                    // Nothing was settled, so back off rather than resend immediately.
                     case UploadOutcome.Answered when result.Settled.Count == 0:
                         await BackoffAsync(stoppingToken);
                         continue;
@@ -170,13 +164,12 @@ public class UploaderWorker(
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                // Normal shutdown, not a cloud outage
                 break;
             }
             catch (Exception ex)
             {
-                // A bug or a local failure (disk full, corrupt DB)
-                // But not the cloud, outages are handled earlier in UploadBatchAsync()
+                // A bug or a local failure such as a full disk. UploadBatchAsync classifies cloud
+                // failures itself, so they do not reach this handler.
                 logger.LogError(ex, "Unexpected failure in the uploader loop.");
                 await BackoffAsync(stoppingToken);
             }
@@ -194,12 +187,11 @@ public class UploaderWorker(
         var startedAt = Stopwatch.GetTimestamp();
         var outcome = "local_failure";
 
-        // Gateway returns 202 and breaks incoming sensor traces
-        // This fans those traces in so the new batch trace can ref them
+        // Each sensor trace ended at the gateway's 202. Linking them lets the batch trace
+        // reference every reading it carries.
         var links = BuildTraceLinks(batch);
 
-        // Create a new Activity (aka span in .NET)
-        // Activity is null if nothing listens to the source
+        // Null when nothing listens to the source.
         using var activity = EdgeTracing.Source.StartActivity(
             "edge.upload",
             ActivityKind.Client,
@@ -215,21 +207,20 @@ public class UploaderWorker(
 
         try
         {
-            // Create a new request for the batch
             var request = new UploadTelemetryRequest
             {
-                Readings = { batch.Select(p => p.Reading) }, // don't include DB rows
+                Readings = { batch.Select(p => p.Reading) },
             };
 
             activity?.SetTag("edge.batch.bytes", request.CalculateSize());
 
             using var call = grpcClient.UploadTelemetryAsync(
                 request,
-                deadline: DateTime.UtcNow.Add(_uploadTimeout), // if cloud hangs
+                deadline: DateTime.UtcNow.Add(_uploadTimeout),
                 cancellationToken: cancellationToken
             );
 
-            // TelemetryResponse isn't disposable, I couldn't await + using
+            // The call is disposable but its response is not, so await it separately.
             var response = await call.ResponseAsync;
             outcome = "answered";
 
@@ -270,13 +261,14 @@ public class UploaderWorker(
         catch (RpcException ex) when (IsShutdownCancellation(ex.StatusCode, cancellationToken))
         {
             outcome = "cancelled";
-            // gRPC reports cancellation as an RpcException, we change it to fit our contract
+            // gRPC reports cancellation as an RpcException. Rethrow it as the standard
+            // cancellation exception the loop handles.
             throw new OperationCanceledException(cancellationToken);
         }
         catch (RpcException ex) when (IsBatchContentError(ex.StatusCode))
         {
             outcome = "malformed";
-            // Cloud refuses call based on its content
+            // The cloud refused the call because of its content.
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             metrics.RecordUploadFailure("malformed");
             logger.LogError(
@@ -289,7 +281,7 @@ public class UploaderWorker(
         catch (RpcException ex) when (IsCallerRefused(ex.StatusCode))
         {
             outcome = "refused";
-            // Cloud refuses caller (only a config change can fix)
+            // The cloud refused this gateway. Only a configuration change can fix it.
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             metrics.RecordUploadFailure("refused");
             logger.LogError(
@@ -302,7 +294,7 @@ public class UploaderWorker(
         catch (RpcException ex)
         {
             outcome = "unreachable";
-            // A dropped connection or an expired deadline lands here
+            // A dropped connection or an expired deadline.
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             metrics.RecordUploadFailure("unreachable");
 
@@ -327,7 +319,6 @@ public class UploaderWorker(
         }
     }
 
-    // Changing the EF Type to the protobuf type
     private static TelemetryReading ToReading(TelemetryRecord item) =>
         new()
         {
@@ -341,20 +332,11 @@ public class UploaderWorker(
         };
 
     /// <summary>
-    /// Grabs the OTel traces from all requests in the current batch
-    /// Then it fans them all into one trace to send to the cloud
+    /// Builds one link per stored sensor trace context so the batch span can reference them.
     /// </summary>
     /// <remarks>
-    ///
-    /// ActivityContext = SpanContext = Context (Traceparent, TraceState, IsRemote)
-    /// Traceparent = TraceId, SpanId, TraceFlags
-    /// TraceState = 3rd party vendors e.g, Datadog, New Relic
-    /// isRemote = true when the context came from the wire
-    ///
-    /// Parse() would throw for the entire batch unlike TryParse()
+    /// TryParse skips a malformed traceparent. Parse would throw and fail the whole batch.
     /// </remarks>
-    /// <param name="batch">Split into SQLite rows and sensor readings built from them</param>
-    /// <returns>List of links with trace information</returns>
     private static List<ActivityLink> BuildTraceLinks(List<OutgoingReading> batch) =>
         batch
             .Select(p => p.Record.TraceParent)
@@ -381,13 +363,14 @@ public class UploaderWorker(
             return;
         }
 
-        // This is fast because it grabs one row off the PK (can run every pass)
+        // Reads one row off the primary key, so it is cheap enough to run every pass.
         var oldest = await db
             .TelemetryRecords.OrderBy(r => r.Id)
-            .Select(r => (DateTimeOffset?)r.OccurredAt) // changes default to null (not 0001-01-01)
+            .Select(r => (DateTimeOffset?)r.OccurredAt) // null, not 0001-01-01, when empty
             .FirstOrDefaultAsync(cancellationToken);
 
-        // DB is actually empty while our buffer is non-empty (b4 a sync)
+        // BufferDepth counts a reservation before its insert commits, so the table can still be
+        // empty.
         if (oldest is null)
         {
             metrics.NoReadingsBuffered();
@@ -401,9 +384,8 @@ public class UploaderWorker(
     /// Exponential backoff with full jitter.
     /// </summary>
     /// <remarks>
-    /// Jittered otherwise every gateway fails @ the same cadence during an outage
-    ///
-    /// Hand-rolled rather than Polly because the backoff is for loop iterations, not one call
+    /// Jitter stops every gateway from retrying on the same cadence during an outage. Polly is not
+    /// used because this backs off loop iterations, not a single call.
     /// </remarks>
     private async Task BackoffAsync(CancellationToken cancellationToken)
     {
@@ -418,24 +400,24 @@ public class UploaderWorker(
         await SafeDelayAsync(jittered, cancellationToken);
     }
 
-    // Our own shutdown cancelled the call, rather than the server hanging up on us
+    // Our own shutdown cancelled the call, rather than the server.
     private static bool IsShutdownCancellation(StatusCode status, CancellationToken token) =>
         status == StatusCode.Cancelled && token.IsCancellationRequested;
 
-    // The cloud answered, so it is reachable and it is refusing the CALL, not readings within it
-    // Per-reading rejections come back in the response, which is a success
+    // The cloud is reachable and refused the call as a whole. Per-reading rejections arrive in a
+    // successful response instead.
     private static bool IsBatchContentError(StatusCode status) =>
         status is StatusCode.InvalidArgument or StatusCode.OutOfRange;
 
-    // The cloud is up and refusing this caller, so reshaping the batch cannot help
+    // The cloud is up and refusing this caller, so changing the batch cannot help.
     private static bool IsCallerRefused(StatusCode status) =>
         status
             is StatusCode.Unauthenticated
                 or StatusCode.PermissionDenied
                 or StatusCode.Unimplemented;
 
-    // A classification rather than letting the exception reach the loop, because the four cases need four different decisions
-    // One rethrow would flatten them back into "something failed", which is the bug this fixes
+    // The loop needs a different decision for each case, which a single rethrown exception
+    // could not express.
     private enum UploadOutcome
     {
         Answered,
@@ -444,10 +426,10 @@ public class UploaderWorker(
         Refused,
     }
 
-    /// <param name="Outcome">Which way the call ended</param>
-    /// <param name="AcceptedIds">Readings the cloud durably holds</param>
-    /// <param name="RejectedIds">Readings the cloud will refuse forever</param>
-    /// <param name="Complete">False when the cloud stopped partway</param>
+    /// <param name="Outcome">How the call ended.</param>
+    /// <param name="AcceptedIds">Readings the cloud holds durably.</param>
+    /// <param name="RejectedIds">Readings the cloud rejected permanently.</param>
+    /// <param name="Complete">False when the cloud left some readings unsettled.</param>
     private readonly record struct UploadResult(
         UploadOutcome Outcome,
         IReadOnlyList<string> AcceptedIds,
@@ -466,8 +448,8 @@ public class UploaderWorker(
         TelemetryReading Reading
     );
 
-    // Task.Delay throws when the token trips, and one caller is the loop's catch block
-    // A throw from there escapes ExecuteAsync instead of reaching the shutdown handler
+    // Task.Delay throws on cancellation, and one caller is the loop's catch block. A throw from
+    // there would escape ExecuteAsync instead of reaching the shutdown handler.
     private static async Task SafeDelayAsync(TimeSpan delay, CancellationToken cancellationToken)
     {
         try

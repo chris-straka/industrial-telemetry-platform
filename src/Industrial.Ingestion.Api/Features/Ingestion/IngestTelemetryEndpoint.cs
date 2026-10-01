@@ -53,7 +53,7 @@ public static class IngestTelemetryEndpoint
                 if (!validationResult.IsValid)
                     return Results.ValidationProblem(validationResult.ToDictionary());
 
-                // Same envelope the gRPC path produces
+                // Same envelope the gRPC path produces.
                 var payload = new TelemetryEnvelope(
                     request.MessageId ?? Guid.CreateVersion7().ToString("D"),
                     request.EquipmentId,
@@ -78,7 +78,8 @@ public static class IngestTelemetryEndpoint
     }
 }
 
-// Nullable let's me CURL it without those things (creates defaults for me)
+// MessageId and OccurredAt are optional so the route is easy to call by hand. The handler fills
+// in defaults.
 public record TelemetryDto(
     string EquipmentId,
     double EngineTemperature,

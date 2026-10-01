@@ -7,11 +7,12 @@ namespace Industrial.Sensor.Emulator.Infrastructure;
 /// The emulator's OpenTelemetry instruments.
 /// </summary>
 /// <remarks>
-/// Instruments are only read at export time, so anything in between has to survive
-/// The tallies are Counters because a running total carries that gap, a Gauge does not
+/// Instruments are read only at export time. The tallies are counters because a running total
+/// still reflects events between exports, while a gauge would lose them.
 ///
-/// Depth is a Gauge, since the question is how full the channel is right now
-/// An UpDownCounter needs a matching -1 per dequeue, and one miss stays wrong forever
+/// Channel depth is an observable gauge because the question is how full the channel is now. An
+/// UpDownCounter would need a matching decrement per dequeue, and one missed decrement would stay
+/// wrong permanently.
 /// </remarks>
 public sealed class SensorMetrics : IDisposable
 {
@@ -66,7 +67,7 @@ public sealed class SensorMetrics : IDisposable
             description: "End-to-end duration of one dequeued reading's bounded HTTP delivery policy."
         );
 
-        // Otel SDK calls this every 60s to send the buffer size to the collector
+        // Sampled by the SDK at each export.
         _meter.CreateObservableGauge(
             "sensor.channel.depth",
             () => (long)channel.Reader.Count,
@@ -88,9 +89,6 @@ public sealed class SensorMetrics : IDisposable
             new KeyValuePair<string, object?>("outcome", outcome)
         );
 
-    // The metrics registry holds a reference to every live Meter
-    // So _meter outlives SensorMetrics and keeps reporting
-    // The registry doesn't know when a meter should stop reporting
-    // SensorMetrics does (its own lifetime), so it should dispose of it
+    // The global meter registry keeps every live Meter reporting, so this owner disposes it.
     public void Dispose() => _meter.Dispose();
 }

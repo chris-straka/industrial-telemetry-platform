@@ -85,7 +85,7 @@ public class TelemetryService(
                     Value = JsonSerializer.Serialize(payload),
                 };
 
-                // Without this there's no way to connect the sensor trace to the consumer's trace
+                // This header is the only link between the sensor's trace and the consumer's.
                 if (!string.IsNullOrEmpty(reading.Traceparent))
                 {
                     kafkaMsg.Headers =
@@ -94,7 +94,8 @@ public class TelemetryService(
                     ];
                 }
 
-                // Produce now, await later: librdkafka batches msgs into one broker request.
+                // Start every produce before awaiting any so librdkafka can batch them into one
+                // broker request.
                 inflight.Add(
                     (
                         reading.MessageId,
@@ -110,8 +111,8 @@ public class TelemetryService(
             catch (Exception ex)
             {
                 // Validation failures are permanent and are the only readings named as rejected.
-                // Producer failures are transient or internal: leaving this ID unnamed tells the
-                // gateway to retain it and retry instead of deleting the only durable copy.
+                // Producer failures are transient or internal. Leaving this ID unnamed tells the
+                // gateway to keep its durable copy and retry.
                 logger.LogError(
                     ex,
                     "Could not queue reading {MessageId} from {EquipmentId}; gateway will retry it.",
@@ -157,7 +158,8 @@ public class TelemetryService(
             }
         }
 
-        // One line, because an outage fails all 200 and buries the log
+        // One summary line, because an outage fails the whole batch and a line per reading
+        // would bury the log.
         if (undelivered > 0)
         {
             logger.LogError(
@@ -176,7 +178,8 @@ public class TelemetryService(
             undelivered > 0
         );
 
-        // Success means we reached the end of the batch, not that we took any of it
+        // Success means every reading was settled as accepted or rejected, not that any was
+        // accepted.
         return new TelemetryResponse
         {
             Success = undelivered == 0,

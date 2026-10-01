@@ -3,24 +3,18 @@ using Microsoft.EntityFrameworkCore;
 namespace Industrial.Sensor.EdgeGateway.Features.Buffer;
 
 /// <summary>
-/// Durable SOF (store-and-forward) buffer.
+/// The gateway's durable store-and-forward buffer.
 /// </summary>
 /// <remarks>
-/// I chose SQLite because it's a single file with no server process to administer
-/// Crash recovery and atomic batch deletes also come for free with the engine
+/// SQLite is a single file with no server to administer, and its engine provides crash recovery
+/// and atomic batch deletes.
 ///
-/// The DBContext grabs its DB connection from a pool of connections.
-/// Every entity a DbContext loads/adds is kept in its ChangeTracker.
-///
-/// AddDbContext&lt;EdgeDbContext&gt;() creates the context in a scoped DI lifetime
-/// var db = scope.ServiceProvider.GetRequiredService&lt;EdgeDbContext&gt;();
-/// Disposing the scope will Dispose() of the DbContext, freeing its DB connection for reuse
-/// It also drops the ChangeTracker's references so they can be GC'd
-/// A DBContext captive inside a singleton grows endlessly and serves stale data
+/// The context is registered with a scoped lifetime. Disposing the scope returns its pooled
+/// connection and releases the ChangeTracker's entities. A context held by a singleton would
+/// keep tracking entities indefinitely and serve stale data.
 /// </remarks>
 public class EdgeDbContext(DbContextOptions<EdgeDbContext> options) : DbContext(options)
 {
-    // DBSet = table
     public DbSet<TelemetryRecord> TelemetryRecords => Set<TelemetryRecord>();
     public DbSet<SettledMessage> SettledMessages => Set<SettledMessage>();
     public DbSet<QuarantinedTelemetryRecord> QuarantinedTelemetryRecords =>

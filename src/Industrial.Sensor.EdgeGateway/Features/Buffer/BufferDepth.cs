@@ -4,10 +4,10 @@ namespace Industrial.Sensor.EdgeGateway.Features.Buffer;
 /// Holds the number of readings in the local buffer and reserves capacity atomically.
 /// </summary>
 /// <remarks>
-/// SQLite stores no row count, so a COUNT(*) walks every row. Startup seeds this value from
-/// disk; after that every committed insert and delete moves it by a matching delta. A compare-
-/// exchange reservation makes MaxDepth a real ceiling even when several sensor requests arrive
-/// together. A process crash cannot leave this stale because startup counts the durable rows again.
+/// SQLite stores no row count, so COUNT(*) walks every row. Startup seeds this value from disk,
+/// and each committed insert or delete then moves it by a matching delta. A compare-exchange
+/// reservation keeps MaxDepth exact when several sensor requests arrive together. A crash cannot
+/// leave it stale because startup counts the durable rows again.
 /// </remarks>
 public sealed class BufferDepth
 {

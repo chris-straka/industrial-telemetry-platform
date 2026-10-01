@@ -10,9 +10,11 @@ public static class CertificateTrust
     public const string ClientAuthenticationOid = "1.3.6.1.5.5.7.3.2";
 
     /// <summary>
-    /// Builds a leaf to one explicitly configured CA and requires the intended TLS EKU. Custom
-    /// root trust avoids weakening validation with an accept-any development callback.
+    /// Chains a leaf certificate to one configured CA and requires the expected TLS EKU.
     /// </summary>
+    /// <remarks>
+    /// Custom root trust avoids weakening validation with an accept-any development callback.
+    /// </remarks>
     public static bool IsTrustedFor(
         X509Certificate2 certificate,
         X509Certificate2 trustedRoot,

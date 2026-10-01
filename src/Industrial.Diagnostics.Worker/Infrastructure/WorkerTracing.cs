@@ -3,11 +3,11 @@ using System.Diagnostics;
 namespace Industrial.Diagnostics.Worker.Infrastructure;
 
 /// <summary>
-/// The worker's ActivitySource (.NET's version of OTel's Tracer).
+/// The worker's ActivitySource, the .NET equivalent of an OpenTelemetry tracer.
 /// </summary>
 /// <remarks>
-/// I need this to grab the span from kafka so I can link to it
-/// autoinstrumentation for kafka is still pre-release
+/// Kafka auto-instrumentation is still pre-release, so the consumer starts its own spans and links
+/// them to the trace context carried in each record.
 /// </remarks>
 public static class WorkerTracing
 {

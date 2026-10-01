@@ -5,16 +5,15 @@ namespace Industrial.Ingestion.Api.Infrastructure;
 
 /// <summary>
 /// Validates gateway certificates against a periodically reloaded trust snapshot.
-/// Removing a fingerprint from the allowlist file revokes that gateway within one
-/// reload interval, without restarting ingestion. A reload that fails (missing or
-/// malformed file) keeps the previous snapshot and logs, so a bad edit fails
-/// closed to the last good policy instead of locking every gateway out at once.
 /// </summary>
 /// <remarks>
-/// Snapshots are immutable and swapped atomically, so handshake threads never see
-/// a half-loaded policy. The two retried generations bound native handle lifetime:
-/// the snapshot displaced two swaps ago is disposed, while in-flight handshakes
-/// can still reference at most the current and previous roots.
+/// Removing a fingerprint from the allowlist file revokes that gateway within one reload
+/// interval. A failed reload, such as a missing or malformed file, logs and keeps the last good
+/// snapshot rather than locking every gateway out.
+///
+/// Snapshots are immutable and swapped atomically, so a handshake never sees a half-loaded
+/// policy. Two generations are retained because an in-flight handshake may still hold the
+/// previous snapshot. The one displaced two swaps ago is disposed.
 /// </remarks>
 public sealed class ReloadingClientCertificatePolicy : IDisposable
 {
@@ -93,7 +92,7 @@ public sealed class ReloadingClientCertificatePolicy : IDisposable
                 or InvalidDataException
                 or CryptographicException)
         {
-            // A half-written or otherwise invalid edit must not revoke every gateway.
+            // Keeping the old policy stops a half-written edit from revoking every gateway.
             _logger.LogWarning(
                 exception,
                 "Gateway trust reload failed; keeping the previous certificate policy."
@@ -122,7 +121,7 @@ public sealed class ReloadingClientCertificatePolicy : IDisposable
         }
         catch (Exception exception)
         {
-            // A timer callback must never take the process down with it.
+            // An exception escaping a timer callback would crash the process.
             _logger.LogError(exception, "Gateway trust reload unexpectedly failed.");
         }
     }

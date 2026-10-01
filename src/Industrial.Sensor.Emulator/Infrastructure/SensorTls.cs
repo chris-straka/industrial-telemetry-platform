@@ -7,10 +7,12 @@ using Industrial.Shared;
 namespace Industrial.Sensor.Emulator.Infrastructure;
 
 /// <summary>
-/// This replica's device identities: one client certificate per simulated device plus
-/// the CA that signs the gateway's server certificate. Loaded once at startup so a
-/// missing shard file fails fast instead of dropping readings at send time.
+/// This replica's device client certificates and the CA that signs the gateway's certificate.
 /// </summary>
+/// <remarks>
+/// Loaded once at startup so a missing certificate file fails fast instead of dropping readings
+/// at send time.
+/// </remarks>
 public sealed class DeviceCredentials : IDisposable
 {
     public DeviceCredentials(
@@ -61,8 +63,8 @@ public sealed class DeviceCredentials : IDisposable
                                 $"device-{equipmentId}.pfx"
                             ),
                             password: string.Empty,
-                            // Development PKI uses empty PFX passwords (see create-dev-pki.sh);
-                            // the secret is the file itself, kept in an isolated volume.
+                            // The development PKI uses empty PFX passwords. The file itself is the
+                            // secret and lives in an isolated volume.
                             X509KeyStorageFlags.EphemeralKeySet
                         );
                 }
@@ -94,10 +96,12 @@ public sealed class DeviceCredentials : IDisposable
 public static class SensorTlsHandlerFactory
 {
     /// <summary>
-    /// One handler chain per device: the device's own client certificate plus strict
-    /// server validation against the sensor CA. The credentials object owns both
-    /// certificates; the handler must not dispose them.
+    /// Creates a handler that presents one device's certificate and validates the gateway against
+    /// the sensor CA.
     /// </summary>
+    /// <remarks>
+    /// The credentials object owns both certificates, so the handler does not dispose them.
+    /// </remarks>
     public static HttpMessageHandler CreateDeviceHandler(
         X509Certificate2 deviceCertificate,
         X509Certificate2 trustedRoot

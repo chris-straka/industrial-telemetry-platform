@@ -52,8 +52,8 @@ public class TelemetryConsumerWorker(
             AutoOffsetReset = AutoOffsetReset.Earliest,
             MetadataMaxAgeMs = 5000,
             AllowAutoCreateTopics = false,
-            // A record becomes durable in Kafka's consumer-group state only after its Postgres
-            // transaction succeeds (or after Kafka persists a poison copy in the DLQ).
+            // Offsets are committed manually, after the Postgres transaction succeeds or after
+            // the DLQ acknowledges a poison record's copy.
             EnableAutoCommit = false,
         };
 
@@ -171,7 +171,7 @@ public class TelemetryConsumerWorker(
                         try
                         {
                             // Consume advances the local fetch position before processing. Rewind
-                            // it explicitly so a later success can never commit past this failure.
+                            // it so a later success cannot commit past this failure.
                             consumer.Seek(consumeResult.TopicPartitionOffset);
                         }
                         catch (Exception seekException)
@@ -204,8 +204,8 @@ public class TelemetryConsumerWorker(
         }
     }
 
-    // Jittered, because every replica fails on the same Postgres at the same instant and a
-    // fixed delay makes them retry in lockstep.
+    // Jittered because every replica sees a Postgres outage at the same moment, and a fixed delay
+    // would make them retry in lockstep.
     private async Task BackoffAsync(CancellationToken cancellationToken)
     {
         _consecutiveFailures++;

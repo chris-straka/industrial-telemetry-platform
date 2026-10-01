@@ -3,16 +3,17 @@ using Microsoft.EntityFrameworkCore;
 namespace Industrial.Diagnostics.Worker.Features.Diagnostics;
 
 /// <summary>
-/// Reading stored in the DB.
+/// A telemetry reading as persisted by the diagnostics worker.
 /// </summary>
 [Index(nameof(MessageId), IsUnique = true)]
 [Index(nameof(EquipmentId), nameof(OccurredAt))]
 public class TelemetryReading
 {
-    // See the sensor emulator for why v7 is better for the index
+    // Version 7 GUIDs are time-ordered, so inserts land on the rightmost page of the key index.
     public Guid Id { get; set; } = Guid.CreateVersion7();
 
-    // idempotency key (sensor -> gateway -> ingestion -> kafka -> worker)
+    // Minted by the sensor and unchanged across every hop. The unique index makes a Kafka replay
+    // a no-op.
     public Guid MessageId { get; set; }
     public string EquipmentId { get; set; } = string.Empty;
     public long SequenceNumber { get; set; }

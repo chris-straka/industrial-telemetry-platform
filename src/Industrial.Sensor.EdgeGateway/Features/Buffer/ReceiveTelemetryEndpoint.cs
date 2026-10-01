@@ -10,7 +10,7 @@ using Microsoft.Extensions.Options;
 namespace Industrial.Sensor.EdgeGateway.Features.Buffer;
 
 /// <summary>
-/// What the sensor sends the gateway
+/// The reading a sensor posts to the gateway.
 /// </summary>
 public record TelemetryDto(
     string MessageId,
@@ -27,8 +27,8 @@ public static class ReceiveTelemetryEndpoint
 
     public static void MapReceiverEndpoints(this IEndpointRouteBuilder app)
     {
-        // ILogger<T> is the normal injection method but a static class cannot be T. Resolve only
-        // the singleton factory here; EdgeDbContext remains a per-request handler parameter.
+        // A static class cannot be the T in ILogger<T>, so create a logger from the singleton
+        // factory. EdgeDbContext stays a per-request handler parameter.
         var logger = app
             .ServiceProvider.GetRequiredService<ILoggerFactory>()
             .CreateLogger(typeof(ReceiveTelemetryEndpoint).FullName!);
@@ -46,9 +46,9 @@ public static class ReceiveTelemetryEndpoint
                 HttpContext http
             ) =>
             {
-                // Authenticate before validating: a well-formed reading from the wrong
-                // device is still refused. On the plaintext ops listener no certificate
-                // can exist, so enabling sensor mTLS closes that listener for readings.
+                // Authenticate before validating, because a well-formed reading from the wrong
+                // device is still refused. The plaintext ops listener has no client certificate,
+                // so enabling sensor mTLS also stops it from accepting readings.
                 if (sensorSecurity.Options.Enabled)
                 {
                     var identityError = SensorIdentityValidator.Validate(
@@ -85,8 +85,8 @@ public static class ReceiveTelemetryEndpoint
                 try
                 {
                     // A MessageId can be queued, recently settled, or retained in rejection
-                    // quarantine. Check all durable states before reserving capacity so delayed
-                    // retries stay idempotent even when their shorter-lived settled marker expired.
+                    // quarantine. Check all three before reserving capacity so a delayed retry
+                    // stays idempotent even after its shorter-lived settled marker expires.
                     var alreadyKnown =
                         await db.SettledMessages.AnyAsync(
                             x => x.MessageId == canonicalMessageId,
@@ -112,8 +112,8 @@ public static class ReceiveTelemetryEndpoint
                         return Results.Accepted();
                     }
 
-                    // Reserve before touching SQLite. Compare-exchange makes this ceiling exact
-                    // across concurrent HTTP requests; a failed insert releases the reservation.
+                    // Reserve before touching SQLite. Compare-exchange keeps the ceiling exact
+                    // across concurrent requests, and a failed insert releases the reservation.
                     var maxDepth = bufferOptions.Value.MaxDepth;
                     if (!bufferDepth.TryReserve(maxDepth))
                     {
@@ -157,15 +157,14 @@ public static class ReceiveTelemetryEndpoint
 
                     try
                     {
-                        // One SaveChanges == one transaction == one fsync (synchronous=FULL).
-                        // No CancellationToken on purpose: after reserving the reading, a lost HTTP
-                        // connection makes the result ambiguous and the durable write must finish.
+                        // One SaveChanges is one transaction and, with synchronous=FULL, one fsync.
+                        // No CancellationToken: if the HTTP connection drops after the reservation,
+                        // the sensor cannot tell what happened, so the durable write finishes.
                         await db.SaveChangesAsync();
 
                         metrics.Received.Add(1);
 
-                        // 202 means accepted but not finished: the reading is durable locally and
-                        // still has to reach the cloud.
+                        // 202 means the reading is durable locally but has not reached the cloud.
                         return Results.Accepted();
                     }
                     catch (DbUpdateException ex) when (IsDuplicateMessageId(ex))
@@ -192,17 +191,16 @@ public static class ReceiveTelemetryEndpoint
             }
         );
 
-        // Same number as edge.queue.depth gauge, readable without Prometheus
-        // Reports disk not cache
+        // Counts rows on disk rather than reading BufferDepth, so it can cross-check the
+        // edge.queue.depth gauge without Prometheus.
         app.MapGet(
             "/buffer",
             async (EdgeDbContext db) =>
-                // This is an anonymous type specifying a response body
                 Results.Ok(new { queueDepth = await db.TelemetryRecords.CountAsync() })
         );
 
-        // A bounded forensic view of permanent cloud rejections. Limit is deliberately capped so
-        // an operator cannot make one request materialize the entire quarantine in memory.
+        // A bounded view of permanent cloud rejections. The limit is capped so one request cannot
+        // load the whole quarantine into memory.
         app.MapGet(
             "/buffer/quarantine",
             async (int? limit, EdgeDbContext db, CancellationToken cancellationToken) =>
@@ -245,8 +243,8 @@ public static class ReceiveTelemetryEndpoint
         );
     }
 
-    // SQLite reports every constraint failure as error code 19 (SQLITE_CONSTRAINT)
-    // 2067 is the extended code for UNIQUE, and MessageId owns the only unique index here
+    // SQLite reports every constraint failure as code 19. Extended code 2067 is a UNIQUE
+    // violation, and MessageId has the only unique index on this table.
     private static bool IsDuplicateMessageId(DbUpdateException ex) =>
         ex.InnerException is SqliteException { SqliteExtendedErrorCode: 2067 };
 }

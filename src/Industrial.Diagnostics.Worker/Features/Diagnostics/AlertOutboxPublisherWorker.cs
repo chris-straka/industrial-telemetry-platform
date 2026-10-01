@@ -91,8 +91,8 @@ public sealed class AlertOutboxPublisherWorker(
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var cutoff = now - _publishedRetention;
 
-        // Never expire pending work. Published rows are delivery history, so keeping a bounded
-        // window preserves recent auditability without growing this hot table forever.
+        // Only published rows are pruned. A bounded window of delivery history keeps recent rows
+        // auditable without letting this hot table grow without limit.
         var deleted = await db
             .AlertOutboxMessages.Where(row =>
                 row.PublishedAt != null && row.PublishedAt < cutoff
@@ -115,9 +115,9 @@ public sealed class AlertOutboxPublisherWorker(
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
-        // SKIP LOCKED lets several worker replicas drain the shared outbox without publishing the
-        // same row concurrently. The lock is held through Kafka's ACK; a process crash rolls it
-        // back and makes the row visible for retry.
+        // SKIP LOCKED lets several replicas drain the shared outbox without publishing the same
+        // row concurrently. The lock is held through Kafka's ACK. If the process crashes, the
+        // transaction rolls back and the row becomes visible for retry.
         var candidates = await db
             .AlertOutboxMessages.FromSqlRaw(
                 """
@@ -252,11 +252,10 @@ public sealed class AlertOutboxPublisherWorker(
         {
             alert = JsonSerializer.Deserialize<TelemetryAlertEnvelope>(payload);
 
-            // Enrichment rewrites the payload, so it must only run on a row this process
-            // actually wrote: a pending marker (empty Diagnostics) with its identity intact.
-            // Anything else publishes unchanged. In particular, a payload whose keys do not
-            // bind (for example legacy casing) deserializes with null identity, and
-            // re-serializing it would bake that loss in as MessageId:null.
+            // Enrichment rewrites the payload, so it runs only on a pending marker (empty
+            // Diagnostics) whose identity fields survived deserialization. Anything else is
+            // published unchanged. A payload whose keys do not bind, such as one with lowercase
+            // keys, deserializes with a null MessageId, and re-serializing it would lose the ID.
             return alert is not null
                 && string.IsNullOrEmpty(alert.Diagnostics)
                 && !string.IsNullOrEmpty(alert.MessageId)
@@ -264,8 +263,8 @@ public sealed class AlertOutboxPublisherWorker(
         }
         catch (JsonException)
         {
-            // Payloads are created by this process, but preserve the existing behavior for a
-            // manually repaired/legacy row: publish it unchanged instead of wedging the outbox.
+            // This process writes valid JSON, but a hand-edited row might not parse. Publish it
+            // unchanged so one bad row does not block the outbox.
             alert = null;
             return false;
         }

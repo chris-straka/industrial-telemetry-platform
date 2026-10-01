@@ -3,18 +3,14 @@ using System.Diagnostics;
 namespace Industrial.Sensor.EdgeGateway.Infrastructure;
 
 /// <summary>
-/// Gateway's ActivitySource (.NET's version of OTel's Tracer)
+/// The gateway's ActivitySource, the .NET equivalent of an OpenTelemetry tracer.
 /// </summary>
 /// <remarks>
-/// This is a named factory for creating Activities.
+/// StartActivity returns null when no listener subscribes to this source name, which is why
+/// callers use ?. on the result.
 ///
-/// Listeners listen to it by name/str (activities aren't created if no listeners)
-/// You can turn off OTel, making all activities null as well
-/// That's why UploaderWorker calls it with ?.
-///
-/// I need this because there's no auto-instrumentation for what the uploader does
-/// HttpClientInstrumentation() only sees the gRPC call, not the read-upload
-/// I need to create a new trace for the batch send I make to the cloud
+/// HTTP client instrumentation sees only the gRPC call, not the read-and-upload cycle, so the
+/// uploader starts its own batch trace from this source.
 /// </remarks>
 public static class EdgeTracing
 {

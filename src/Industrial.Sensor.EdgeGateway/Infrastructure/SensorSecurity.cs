@@ -7,10 +7,12 @@ using Industrial.Shared;
 namespace Industrial.Sensor.EdgeGateway.Infrastructure;
 
 /// <summary>
-/// The sensor-side trust material: this gateway's server certificate plus the CA that
-/// signs device certificates. Registered always (even with mTLS disabled) so the
-/// receiver endpoint can consult one type; the container disposes both certificates.
+/// This gateway's server certificate and the CA that signs device certificates.
 /// </summary>
+/// <remarks>
+/// Registered even when sensor mTLS is disabled, so the receiver endpoint can depend on one type.
+/// The container disposes both certificates.
+/// </remarks>
 public sealed class SensorSecurityState : IDisposable
 {
     public SensorSecurityState(
@@ -70,8 +72,8 @@ public static class SensorSecurityExtensions
         }
         catch
         {
-            // The state owns both certificates once constructed; before that the
-            // server certificate is still ours alone.
+            // Once the state is constructed it owns both certificates. Until then this method
+            // must dispose the server certificate itself.
             if (state is null)
                 serverCertificate.Dispose();
             else
@@ -81,8 +83,8 @@ public static class SensorSecurityExtensions
     }
 
     // Wires Kestrel and DI from an already-built state. Tests use this with in-memory
-    // certificates to exercise the identical handshake and route path without touching
-    // the filesystem loader (whose EphemeralKeySet is Linux-only).
+    // certificates to exercise the same handshake and route path without the filesystem
+    // loader, whose EphemeralKeySet is Linux-only.
     internal static void AddSensorSecurity(
         this WebApplicationBuilder builder,
         SensorSecurityState state
@@ -132,10 +134,12 @@ public static class SensorSecurityExtensions
 
 /// <summary>
 /// Binds a presented device certificate to the equipment ID it claims.
-/// The TLS handshake already required a certificate; this decides whether that
-/// certificate may speak for this reading. Every failure returns 403, never 400:
-/// the reading may be well-formed while the sender is simply not its device.
 /// </summary>
+/// <remarks>
+/// The TLS handshake already required a certificate. This decides whether that certificate may
+/// speak for this reading. Failures map to 403 rather than 400, because the reading may be
+/// well-formed while the sender is not its device.
+/// </remarks>
 public static class SensorIdentityValidator
 {
     public static bool IsTransportTrusted(
@@ -157,8 +161,8 @@ public static class SensorIdentityValidator
         if (certificate is null)
             return "a sensor client certificate is required";
 
-        // Cheap, stable comparison first: a compromised device from another shard fails
-        // here without spending a chain build.
+        // Compare names first. A compromised device from another shard fails here without the
+        // cost of a chain build.
         var subjectName = certificate.GetNameInfo(X509NameType.SimpleName, false);
         if (!string.Equals(subjectName, equipmentId, StringComparison.Ordinal))
             return $"certificate {subjectName} is not authorized for {equipmentId}";

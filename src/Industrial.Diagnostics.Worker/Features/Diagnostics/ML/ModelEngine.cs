@@ -96,8 +96,8 @@ public sealed class ModelEngine : IDisposable
         }
     }
 
-    // A failed database transaction must not leave the in-memory window one reading ahead of
-    // durable state. The retry recreates this equipment's engine from Postgres before scoring.
+    // After a failed database transaction the in-memory window is one reading ahead of durable
+    // state, so the retry rebuilds this equipment's engine from Postgres before scoring.
     public void Invalidate(string equipmentId) => _engines.TryRemove(equipmentId, out _);
 
     private EngineState CreateState(IReadOnlyList<float> history)
