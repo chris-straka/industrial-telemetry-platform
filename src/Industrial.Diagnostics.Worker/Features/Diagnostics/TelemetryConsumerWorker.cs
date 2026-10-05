@@ -333,7 +333,7 @@ public class TelemetryConsumerWorker(
                         EquipmentId = data.EquipmentId,
                         // Empty Diagnostics is an internal "needs enrichment" marker. The outbox
                         // publisher performs the optional network call after this telemetry row and
-                        // outbox row have committed, so Gemini latency cannot stall source offsets.
+                        // outbox row have committed, so advisor latency cannot stall source offsets.
                         Payload = BuildPendingAnomalyPayload(data),
                         TraceParent = Activity.Current?.Id,
                     }

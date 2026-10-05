@@ -3,9 +3,8 @@ using System.Text.Json;
 
 using Confluent.Kafka;
 
-using Google.GenAI;
-
 using Industrial.Diagnostics.Worker.Configuration;
+using Industrial.Diagnostics.Worker.Features.Diagnostics.Advice;
 using Industrial.Diagnostics.Worker.Infrastructure;
 using Industrial.Diagnostics.Worker.Infrastructure.Data;
 using Industrial.Shared;
@@ -23,10 +22,9 @@ public sealed class AlertOutboxPublisherWorker(
     IProducer<string, string> producer,
     IOptions<KafkaOptions> kafkaOptions,
     IOptions<OutboxOptions> outboxOptions,
-    IOptions<GeminiOptions> geminiOptions,
     WorkerMetrics metrics,
     ILogger<AlertOutboxPublisherWorker> logger,
-    Client gemini
+    IDiagnosisAdvisor advisor
 ) : BackgroundService
 {
     private readonly TimeSpan _idleDelay = TimeSpan.FromMilliseconds(
@@ -140,7 +138,7 @@ public sealed class AlertOutboxPublisherWorker(
 
         if (TryReadPendingEnrichment(pending.Payload, out var pendingAlert))
         {
-            pending.Payload = await BuildEnrichedPayloadAsync(pendingAlert!, cancellationToken);
+            pending.Payload = await BuildEnrichedPayloadAsync(db, pendingAlert!, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return PublishOutcome.Enriched;
@@ -210,37 +208,80 @@ public sealed class AlertOutboxPublisherWorker(
     }
 
     private async Task<string> BuildEnrichedPayloadAsync(
+        AppDbContext db,
         TelemetryAlertEnvelope alert,
         CancellationToken cancellationToken
     )
     {
-        logger.LogWarning("ANOMALY: {Id}. Requesting AI analysis...", alert.EquipmentId);
+        var evidence = await LoadEvidenceAsync(db, alert, cancellationToken);
+        logger.LogWarning(
+            "ANOMALY: {Id}. Requesting {Advisor} diagnosis...",
+            alert.EquipmentId,
+            advisor.Name
+        );
 
-        string aiAdvice;
-        using var aiTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        aiTimeout.CancelAfter(TimeSpan.FromSeconds(10));
+        string diagnosis;
+        using var adviceTimeout = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken
+        );
+        adviceTimeout.CancelAfter(TimeSpan.FromSeconds(10));
 
         try
         {
-            var prompt =
-                $"Equipment {alert.EquipmentId} anomaly. Temp: {alert.EngineTemperature:F1}C. Provide 3 steps.";
-            var response = await gemini.Models.GenerateContentAsync(
-                model: geminiOptions.Value.Model,
-                contents: prompt,
-                cancellationToken: aiTimeout.Token
+            diagnosis = Truncate(
+                await advisor.DiagnoseAsync(evidence, adviceTimeout.Token),
+                8_000
             );
-
-            var responseText = response.Text ?? throw new Exception("Could not fetch from AI");
-            aiAdvice = responseText.Length <= 8_000 ? responseText : responseText[..8_000];
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
-            logger.LogError(exception, "AI call failed");
+            // A failed or slow LLM still yields useful, deterministic text rather than a bare
+            // "unavailable"; the metric keeps the degradation visible.
+            logger.LogError(exception, "{Advisor} diagnosis failed", advisor.Name);
             metrics.AiFailures.Add(1);
-            aiAdvice = "AI unavailable";
+            diagnosis = "AI unavailable. " + RuleBasedDiagnosisAdvisor.Diagnose(evidence);
         }
 
-        return JsonSerializer.Serialize(alert with { Diagnostics = aiAdvice });
+        return JsonSerializer.Serialize(alert with { Diagnostics = diagnosis });
+    }
+
+    /// <summary>
+    /// Reads the committed anomaly row and the equipment's preceding readings. Both queries use
+    /// the (EquipmentId, OccurredAt) and MessageId indexes. A missing row (pruned or hand-made
+    /// outbox entry) still yields evidence from the alert itself.
+    /// </summary>
+    internal static async Task<DiagnosisEvidence> LoadEvidenceAsync(
+        AppDbContext db,
+        TelemetryAlertEnvelope alert,
+        CancellationToken cancellationToken
+    )
+    {
+        TelemetryReading? reading = Guid.TryParse(alert.MessageId, out var messageId)
+            ? await db
+                .TelemetryReadings.AsNoTracking()
+                .SingleOrDefaultAsync(r => r.MessageId == messageId, cancellationToken)
+            : null;
+
+        var before = reading?.OccurredAt ?? alert.OccurredAt;
+        var recent = await db
+            .TelemetryReadings.AsNoTracking()
+            .Where(r => r.EquipmentId == alert.EquipmentId && r.OccurredAt < before)
+            .OrderByDescending(r => r.OccurredAt)
+            .Take(DiagnosisEvidence.RecentWindow)
+            .Select(r => r.EngineTemperature)
+            .ToListAsync(cancellationToken);
+        recent.Reverse();
+
+        return new DiagnosisEvidence(
+            alert.EquipmentId,
+            alert.OccurredAt,
+            alert.EngineTemperature,
+            reading?.OilPressure,
+            reading?.DetectorScore,
+            reading?.DetectorPValue,
+            reading?.DetectorHistoryCount,
+            recent
+        );
     }
 
     internal static bool TryReadPendingEnrichment(

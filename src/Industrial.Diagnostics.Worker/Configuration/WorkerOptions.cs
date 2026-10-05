@@ -78,6 +78,26 @@ public class KafkaOptions : IValidatableObject
     }
 }
 
+public enum DiagnosisProvider
+{
+    /// <summary>Deterministic rule-based advice; no key, no network.</summary>
+    Offline,
+
+    /// <summary>Google Gemini, with the offline advisor as the fallback on any failure.</summary>
+    Gemini,
+}
+
+public class DiagnosisOptions
+{
+    public const string Section = "Diagnosis";
+
+    // Offline is the checked-in default (appsettings.json): an LLM is an opt-in enrichment, so a
+    // fresh clone and CI never need an API key or make a paid call.
+    [EnumDataType(typeof(DiagnosisProvider))]
+    public DiagnosisProvider Provider { get; set; } = DiagnosisProvider.Offline;
+}
+
+/// <summary>Bound and validated only when <see cref="DiagnosisProvider.Gemini"/> is selected.</summary>
 public class GeminiOptions
 {
     public const string Section = "Gemini";

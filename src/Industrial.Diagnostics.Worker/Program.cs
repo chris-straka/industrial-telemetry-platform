@@ -4,6 +4,7 @@ using Google.GenAI;
 
 using Industrial.Diagnostics.Worker.Configuration;
 using Industrial.Diagnostics.Worker.Features.Diagnostics;
+using Industrial.Diagnostics.Worker.Features.Diagnostics.Advice;
 using Industrial.Diagnostics.Worker.Features.Diagnostics.ML;
 using Industrial.Diagnostics.Worker.Infrastructure;
 using Industrial.Diagnostics.Worker.Infrastructure.Data;
@@ -12,6 +13,7 @@ using Industrial.Shared;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Options;
 
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
@@ -42,15 +44,17 @@ builder
     .ValidateDataAnnotations()
     .ValidateOnStart();
 builder
-    .Services.AddOptions<GeminiOptions>()
-    .Bind(builder.Configuration.GetSection(GeminiOptions.Section))
+    .Services.AddOptions<DiagnosisOptions>()
+    .Bind(builder.Configuration.GetSection(DiagnosisOptions.Section))
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
 // Bound directly because service registration runs before the service provider exists.
 var otel = builder.Configuration.GetSection(OTelOptions.Section).Get<OTelOptions>()!;
 var kafka = builder.Configuration.GetSection(KafkaOptions.Section).Get<KafkaOptions>()!;
-var gemini = builder.Configuration.GetSection(GeminiOptions.Section).Get<GeminiOptions>()!;
+var diagnosis =
+    builder.Configuration.GetSection(DiagnosisOptions.Section).Get<DiagnosisOptions>()
+    ?? new DiagnosisOptions();
 var pgConnectionString = builder.Configuration.GetConnectionString("IndustrialDb");
 ArgumentException.ThrowIfNullOrWhiteSpace(pgConnectionString);
 #endregion
@@ -144,7 +148,27 @@ builder
 builder.Services.AddSingleton(
     new ModelEngine(Path.Combine(AppContext.BaseDirectory, "model.zip"))
 );
-builder.Services.AddSingleton(new Client(apiKey: gemini.ApiKey));
+// The offline advisor is always registered: it is the default and the fallback when an LLM call
+// fails. Gemini's key is validated only when Gemini is actually selected.
+builder.Services.AddSingleton<RuleBasedDiagnosisAdvisor>();
+if (diagnosis.Provider == DiagnosisProvider.Gemini)
+{
+    builder
+        .Services.AddOptions<GeminiOptions>()
+        .Bind(builder.Configuration.GetSection(GeminiOptions.Section))
+        .ValidateDataAnnotations()
+        .ValidateOnStart();
+    builder.Services.AddSingleton(services => new Client(
+        apiKey: services.GetRequiredService<IOptions<GeminiOptions>>().Value.ApiKey
+    ));
+    builder.Services.AddSingleton<IDiagnosisAdvisor, GeminiDiagnosisAdvisor>();
+}
+else
+{
+    builder.Services.AddSingleton<IDiagnosisAdvisor>(services =>
+        services.GetRequiredService<RuleBasedDiagnosisAdvisor>()
+    );
+}
 
 // A hosted service, so the consume loop follows the app lifecycle without blocking it.
 builder.Services.AddHostedService<TelemetryConsumerWorker>();

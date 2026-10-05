@@ -81,6 +81,9 @@ diagnosticsWorker:
   replicaCount: 1
   kafkaGroupId: diagnostics-group
   kafkaReadinessTimeoutSeconds: 3
+  # The chart wires a Gemini key from the application secret, so it opts into the LLM advisor.
+  # Offline needs no key; any Gemini failure falls back to the offline text anyway.
+  diagnosisProvider: Gemini
   geminiModel: gemini-flash-lite-latest
   consumer:
     baseBackoffSeconds: 1

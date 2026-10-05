@@ -345,6 +345,8 @@ spec:
               value: {{ .Values.diagnosticsWorker.outbox.publishedRetentionHours | quote }}
             - name: Outbox__MaintenanceIntervalSeconds
               value: {{ .Values.diagnosticsWorker.outbox.maintenanceIntervalSeconds | quote }}
+            - name: Diagnosis__Provider
+              value: {{ .Values.diagnosticsWorker.diagnosisProvider | quote }}
             - name: Gemini__ApiKey
               valueFrom:
                 secretKeyRef:

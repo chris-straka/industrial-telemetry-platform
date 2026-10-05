@@ -187,7 +187,10 @@ services:
       - Outbox__MaxBackoffSeconds=30
       - Outbox__PublishedRetentionHours=168
       - Outbox__MaintenanceIntervalSeconds=30
-      - Gemini__ApiKey=${GEMINI_API_KEY}
+      # Offline (default) writes a deterministic rule-based diagnosis. Set DIAGNOSIS_PROVIDER=Gemini
+      # and GEMINI_API_KEY in .env to opt into the LLM; failures fall back to the offline text.
+      - Diagnosis__Provider=${DIAGNOSIS_PROVIDER:-Offline}
+      - Gemini__ApiKey=${GEMINI_API_KEY:-}
       - Gemini__Model=gemini-flash-lite-latest
       - Kafka__BootstrapServers=kafka:9092
       - Kafka__UseTls=true

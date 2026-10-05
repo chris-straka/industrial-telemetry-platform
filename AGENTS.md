@@ -70,7 +70,11 @@ origin-side run total.
   deployed tags. Regression tests pin the current tags.
 - `ModelEngine` is an online IID spike detector, not a model trained from `training_data.csv`.
   State is isolated per `EquipmentId`, warmed from recent Postgres readings, and invalidated after
-  a failed DB transaction.
+  a failed DB transaction. Physically implausible readings are range-gated and must never enter a
+  detector window (one -999 dropout blinds the p-value to real overheats).
+- Diagnosis text is enrichment after commit, never part of the decision. The offline rule-based
+  advisor is the default and the fallback; Gemini is opt-in (`Diagnosis:Provider=Gemini`) and
+  tests never call it.
 - A Web API replica owns only its local SignalR clients, so every replica uses a distinct Kafka
   group and receives the full live stream. Do not replace that with a shared group without adding
   a SignalR backplane.
@@ -93,7 +97,7 @@ entry when implementation changes its premise.
 | `Industrial.Sensor.Emulator` | best-effort fake devices with acquisition/transmission loops |
 | `Industrial.Sensor.EdgeGateway` | bounded SQLite store-and-forward receiver and gRPC uploader |
 | `Industrial.Ingestion.Api` | validates gRPC batches and produces `telemetry-events` |
-| `Industrial.Diagnostics.Worker` | Kafka consumer, online IID detection, Postgres, Gemini, alert outbox |
+| `Industrial.Diagnostics.Worker` | Kafka consumer, range gate + online IID detection, Postgres, offline/Gemini diagnosis, alert outbox |
 | `Industrial.Web.Api` | per-instance Kafka broadcast subscription and SignalR relay |
 | `Industrial.Web.Dashboard` | Angular 22 live dashboard (signals, Material) with bounded `MessageId` dedupe |
 | `Industrial.Data.ML` | builds the IID detector configuration/schema artifact |
