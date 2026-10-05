@@ -20,12 +20,20 @@ public class AnomalyPrediction
     public double[] Prediction { get; set; } = default!;
 }
 
+/// <summary>One scored reading plus the provenance persisted beside it.</summary>
+/// <remarks>
+/// <c>Method</c> is <see cref="ModelEngine.IidSpikeMethod"/> when the online detector scored the
+/// reading, or <see cref="ModelEngine.RangeGateMethod"/> when it was physically implausible and
+/// never reached the detector. A range-gated p-value of 0 is a rule's certainty, not a
+/// statistical result.
+/// </remarks>
 public record MachineHealthResult(
     bool IsAnomaly,
     double Score,
     double PValue,
     int HistoryCount,
-    string DetectorVersion
+    string DetectorVersion,
+    string Method
 );
 
 /// <summary>
@@ -37,10 +45,23 @@ public record MachineHealthResult(
 /// in one prediction engine makes one machine's temperature become another machine's history, so
 /// each key gets an isolated engine. A newly created state is warmed from persisted readings,
 /// which makes restarts and Kafka rebalances converge on the same recent history.
+///
+/// Physically implausible readings (the emulator's -999 C dropout sentinel) are flagged by a range
+/// gate and never enter a detector window. The IID detector's p-value is relative to its recent
+/// history, so one -999 in the window widens the reference spread until a real 245 C overheat
+/// looks ordinary. Replaying the emulator's fault model measured 0 of 704 overheats flagged
+/// before the gate and 703 of 704 after it (see DetectorQualityTests).
 /// </remarks>
 public sealed class ModelEngine : IDisposable
 {
     public const int HistoryLength = 20;
+
+    // An engine-block thermocouple reads roughly -50..400 C. Anything outside is a sensor fault.
+    public const double PlausibleMinCelsius = -50;
+    public const double PlausibleMaxCelsius = 400;
+
+    public const string IidSpikeMethod = "iid-spike";
+    public const string RangeGateMethod = "range-gate";
     private const int MaxEquipmentStates = 10_000;
 
     private readonly MLContext _mlContext = new();
@@ -59,6 +80,13 @@ public sealed class ModelEngine : IDisposable
     /// <summary>SHA-256 of the exact detector artifact loaded by this process.</summary>
     public string DetectorVersion { get; }
 
+    public static bool IsPlausible(double celsius) =>
+        double.IsFinite(celsius) && celsius is >= PlausibleMinCelsius and <= PlausibleMaxCelsius;
+
+    /// <summary>
+    /// Scores one reading. <paramref name="loadHistory"/> runs only when this equipment has no
+    /// in-memory state and should return plausible readings in the order they were scored.
+    /// </summary>
     public async Task<MachineHealthResult> InspectAsync(
         string equipmentId,
         float temperature,
@@ -66,6 +94,22 @@ public sealed class ModelEngine : IDisposable
         CancellationToken cancellationToken
     )
     {
+        if (!IsPlausible(temperature))
+        {
+            // Leaves any detector state untouched; the reading is a sensor fault, not a sample.
+            var historyCount = _engines.TryGetValue(equipmentId, out var existing)
+                ? Volatile.Read(ref existing.ObservationCount)
+                : 0;
+            return new MachineHealthResult(
+                true,
+                temperature,
+                0,
+                historyCount,
+                DetectorVersion,
+                RangeGateMethod
+            );
+        }
+
         if (!_engines.TryGetValue(equipmentId, out var state))
         {
             var history = await loadHistory(cancellationToken);
@@ -91,7 +135,8 @@ public sealed class ModelEngine : IDisposable
                 prediction.Prediction[1],
                 prediction.Prediction[2],
                 historyCount,
-                DetectorVersion
+                DetectorVersion,
+                IidSpikeMethod
             );
         }
     }
@@ -104,10 +149,12 @@ public sealed class ModelEngine : IDisposable
     {
         var engine = _model.CreateTimeSeriesEngine<TelemetryData, AnomalyPrediction>(_mlContext);
 
-        foreach (var temperature in history)
+        // The caller already filters in SQL; this guards any other history source.
+        var plausible = history.Where(temperature => IsPlausible(temperature)).ToArray();
+        foreach (var temperature in plausible)
             engine.Predict(new TelemetryData { EngineTemperature = temperature });
 
-        return new EngineState(engine, Math.Min(history.Count, HistoryLength));
+        return new EngineState(engine, Math.Min(plausible.Length, HistoryLength));
     }
 
     private void TrimCacheIfNeeded(string currentEquipmentId)

@@ -273,7 +273,12 @@ public class TelemetryConsumerWorker(
                 async cancellationToken =>
                 {
                     var history = await db
-                        .TelemetryReadings.Where(r => r.EquipmentId == data.EquipmentId)
+                        .TelemetryReadings.Where(r =>
+                            r.EquipmentId == data.EquipmentId
+                            // Range-gated readings never entered the detector window.
+                            && r.EngineTemperature >= ModelEngine.PlausibleMinCelsius
+                            && r.EngineTemperature <= ModelEngine.PlausibleMaxCelsius
+                        )
                         // Reconstruct the order in which this stateful detector consumed rows.
                         // Sensor clocks may jump, so event time is not a safe processing order.
                         .OrderByDescending(r => r.PersistedAt)
@@ -314,6 +319,7 @@ public class TelemetryConsumerWorker(
                 DetectorPValue = result.PValue,
                 DetectorHistoryCount = result.HistoryCount,
                 DetectorVersion = result.DetectorVersion,
+                DetectionMethod = result.Method,
             };
 
             db.TelemetryReadings.Add(reading);

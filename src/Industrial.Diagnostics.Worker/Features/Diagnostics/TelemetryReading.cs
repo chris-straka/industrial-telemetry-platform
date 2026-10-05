@@ -30,4 +30,8 @@ public class TelemetryReading
     public double? DetectorPValue { get; set; }
     public int? DetectorHistoryCount { get; set; }
     public string? DetectorVersion { get; set; }
+
+    // "iid-spike" or "range-gate" (see ModelEngine). Null only for rows written before the
+    // range gate existed, all of which were scored by the IID detector.
+    public string? DetectionMethod { get; set; }
 }

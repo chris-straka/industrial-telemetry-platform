@@ -41,4 +41,29 @@ public sealed class ModelEngineTests
         Assert.Equal(1, bLoads);
         Assert.Equal(3, rebuiltA.HistoryCount);
     }
+
+    [Fact]
+    public async Task Implausible_readings_are_range_gated_without_touching_detector_state()
+    {
+        using var engine = new ModelEngine(Path.Combine(AppContext.BaseDirectory, "model.zip"));
+        Task<IReadOnlyList<float>> Load(CancellationToken _) =>
+            Task.FromResult<IReadOnlyList<float>>([90, -999, 91, 89]);
+
+        var first = await engine.InspectAsync("EQ-A", 92, Load, CancellationToken.None);
+        var dropout = await engine.InspectAsync("EQ-A", -999, Load, CancellationToken.None);
+        var next = await engine.InspectAsync("EQ-A", 93, Load, CancellationToken.None);
+
+        // The -999 in the warm-up history is skipped, so three plausible readings warm the state.
+        Assert.Equal(3, first.HistoryCount);
+        Assert.Equal(ModelEngine.IidSpikeMethod, first.Method);
+
+        Assert.True(dropout.IsAnomaly);
+        Assert.Equal(ModelEngine.RangeGateMethod, dropout.Method);
+        Assert.Equal(0, dropout.PValue);
+        Assert.Equal(4, dropout.HistoryCount);
+
+        // The gated reading did not advance the window.
+        Assert.Equal(4, next.HistoryCount);
+        Assert.Equal(ModelEngine.IidSpikeMethod, next.Method);
+    }
 }
