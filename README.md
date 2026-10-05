@@ -1,8 +1,30 @@
 # Industrial Platform
 
-.NET microservice platform that ingests telemetry from simulated industrial equipment and flags
-anomalies with an online ML.NET detector plus an AI-generated diagnosis. Docker Compose is the
-currently supported runtime; the cloud deployment files are unfinished.
+IoT telemetry platform in .NET 10. Simulated machines stream sensor readings through a
+store-and-forward edge gateway into Kafka. A per-machine online ML.NET anomaly detector flags
+overheats and sensor faults, and an AI diagnosis step turns each anomaly into a finding, a
+likely cause, and three corrective steps, shown live on an Angular dashboard. The focus is the
+edge: per-device mTLS identities, a durable SQLite outage buffer, and a detector that keeps
+working when a sensor reports nonsense.
+
+> Sibling: [TxMonitoringPlatform](https://github.com/chris-straka/TxMonitoringPlatform) began as a
+> copy of this repo and was re-themed for fintech. It drops the edge device fleet and the LLM
+> and instead covers explainable risk rules, Redis velocity windows, integer-minor-unit money,
+> and an end-to-end latency budget. The shared pipeline mechanics (outbox, DLQ, idempotent sink)
+> are documented here.
+
+```mermaid
+flowchart LR
+  S["Sensor emulator<br/>N devices, per-device mTLS"] -->|HTTPS 202| G["Edge gateway<br/>SQLite WAL buffer"]
+  G -->|"gRPC + mTLS<br/>batches of 200"| I[Ingestion API]
+  I -->|telemetry-events| K[(Kafka)]
+  K --> D["Diagnostics worker<br/>range gate + IID spike detector"]
+  D -->|"reading + outbox<br/>one transaction"| P[(Postgres)]
+  P --> A["Diagnosis advisor<br/>offline rules / Gemini opt-in"]
+  A -->|telemetry-alerts| K
+  K --> W["Web API<br/>SignalR"]
+  W --> UI["Angular dashboard"]
+```
 
 The sensor emulator is deliberately best-effort, like a constrained device: it keeps acquiring
 while the network is down and may shed samples when its bounded RAM/retry budget is exhausted.
@@ -11,12 +33,11 @@ retained through cloud and gateway outages until the cloud settles it.
 
 # Quickstart
 
-Docker and Make are the only requirements for the demo path.
+Docker and Make are the only requirements for the demo path. No API key is needed.
 
 ```sh
 git clone git@github.com:chris-straka/industrial-telemetry-platform.git
 cd industrial-telemetry-platform
-cp .env.example .env    # set GEMINI_API_KEY; the diagnostics worker will not start without it
 make upd
 ```
 
@@ -24,8 +45,43 @@ The dashboard is at <http://127.0.0.1:5173> and Grafana at <http://127.0.0.1:300
 pipeline a few seconds to produce its first readings, then see [The demo](#the-demo) to take the
 cloud down and watch the edge buffer absorb the outage.
 
-`Gemini:ApiKey` is validated at startup, so an empty key fails the worker rather than degrading it.
-The other services run without one.
+Diagnosis is offline by default: a deterministic rule-based advisor reads the anomaly row and
+the machine's previous 20 readings, computes a robust baseline (median/MAD), and names the
+pattern (sensor fault, sudden spike, rising trend, drop, or low-oil overheat). To use Gemini
+instead, copy `.env.example` to `.env` and set `DIAGNOSIS_PROVIDER=Gemini` and `GEMINI_API_KEY`.
+The Gemini prompt carries the same computed evidence, and a failed or slow call falls back to
+the offline text.
+
+# Build and test
+
+```sh
+dotnet build IndustrialPlatform.slnx && dotnet test IndustrialPlatform.slnx     # 73 tests
+cd src/Industrial.Web.Dashboard && npm ci && npm run lint && npm test && npm run build  # 54 tests
+./scripts/e2e.sh                                                                 # needs Docker
+```
+
+On Apple Silicon without Rosetta, `brew install protobuf grpc` provides the native `protoc` that
+`Directory.Build.props` picks up. Node is pinned to 24 LTS in `mise.toml`.
+
+# Results
+
+Measured on an Apple M4 Mac mini (10 cores, 16 GB), .NET 10.0.401, Release build, while other
+builds were running on the machine.
+
+| what | result | command |
+| --- | --- | --- |
+| Detector on the emulator's fault model (8 devices x 700 readings, seeded, warm-up excluded) | overheats 703/704, dropouts 544/544, false positives 0/4192 | `dotnet test tests/Industrial.Diagnostics.Tests -c Release --filter DetectorQualityTests --logger "console;verbosity=detailed"` |
+| Same replay before the range gate | overheats **0/704**: each -999 dropout in the p-value window hid every real overheat | same replay, run before commit `6bb7c0a` added the gate |
+| Detector throughput, in-process | ~106K inspections/s (median of 5 runs, range 68K-114K) | same test |
+| Test suites | 73 .NET + 54 Angular, all passing | commands above |
+| Dashboard initial bundle | 533 kB raw / 121 kB transferred | `npm run build` |
+
+Not measured in this pass: end-to-end throughput and Kafka-to-dashboard latency, because Docker
+was not running. `./scripts/e2e.sh` covers the outage, retry, DLQ, outbox, and TLS failure
+drills, but it was not re-run for these numbers.
+
+A guided tour of the code with exercises and interview questions is in
+[docs/LEARN.md](docs/LEARN.md).
 
 # Data flow
 
@@ -53,9 +109,9 @@ sensor-emulator (N devices, mints MessageId + OccurredAt)
    ▼                        │                          ▼
 diagnostics-worker          │                      web-api
  ├─ dedupes on MessageId    │                       ├─ consumes telemetry-events
- ├─ ML.NET anomaly check    │                       ├─ consumes telemetry-alerts
+ ├─ range gate + ML.NET     │                       ├─ consumes telemetry-alerts
  ├─ saves to Postgres       │                       └─ relays live data via SignalR
- ├─ calls Gemini            │                                  │
+ ├─ diagnosis advisor       │                                  │
  ├─ poisons ──► telemetry-events-dlq                           │
  └─ alert outbox publisher ─┘                                  ▼
                                                          web-dashboard
@@ -162,7 +218,7 @@ To run the demo:
 To build and test outside Compose:
 
 - [.NET](https://dotnet.microsoft.com/en-us/download) for `make test` and the individual services
-- [Node](https://nodejs.org/en) for the dashboard's Vite dev server
+- [Node](https://nodejs.org/en) for the Angular dashboard (Node 24; `npm test`, `npm run dev`)
 
 For the unfinished deployment material, which renders and plans but has never been applied:
 
@@ -175,7 +231,7 @@ Compose publishes development ports on `127.0.0.1` only.
 
 | service | host port | notes |
 | --- | --- | --- |
-| web-dashboard | 5173 | Vite dev server |
+| web-dashboard | 5173 | Angular dev server (`ng serve`) |
 | web-api | 5090 | SignalR hub |
 | ingestion-api | 5089 | REST (HTTP/1.1), manual testing only |
 | ingestion-api | 5091 | gRPC (HTTPS/HTTP/2); requires the generated gateway client certificate |

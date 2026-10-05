@@ -1,12 +1,35 @@
 # track: swe | csa | both. TODO-prefixed lines are not true yet.
+#
+# Positioning: IoT telemetry ingestion at the edge + online ML.NET anomaly detection + AI
+# diagnosis (Angular). The sibling TxMonitoringPlatform began as a copy of this repo; its angle
+# is fintech risk rules, Redis velocity, and end-to-end latency. On one resume, lead with the
+# "lead" bullets below and never list the same shared-lineage bullet under both projects.
+# Numbers: Apple M4 Mac mini (10 cores, 16 GB), Release build; commands in README "Results".
 
 projects:
   - id: telemetry
-    name: "Cloud Infrastructure & Distributed Systems"
+    name: "IoT Telemetry & Anomaly Detection Platform"
     context: "Personal Project"
-    stack: ".NET 10, Kafka, Docker, ML.NET"
+    stack: ".NET 10, Kafka, ML.NET, Postgres, SQLite, Angular, Docker"
     bullets:
-      # working set
+      # lead: unique to this repo and measured
+      - id: detector-gate
+        track: swe
+        text: "Built per-machine online anomaly detection with ML.NET IID spike detectors over Kafka telemetry; replaying the sensor fault model exposed 0/704 overheat recall from dropout sentinels polluting the p-value window, and a physical range gate raised it to 703/704 with 0/4,192 false positives."
+      - id: ai-diagnosis
+        track: both
+        text: "Added evidence-grounded AI diagnosis for every anomaly: an offline robust-statistics advisor (median/MAD baseline, trend and low-oil rules) by default and an opt-in Gemini advisor fed the same computed evidence, falling back to the offline text so an LLM outage never blocks an alert."
+      - id: edge-buffer
+        track: swe
+        text: "Engineered an edge gateway with a durable SQLite WAL buffer (synchronous=FULL) that rides out total cloud outages, sheds overflow with HTTP 429 + Retry-After, and deletes a reading only after the cloud names its ID accepted or rejected."
+      - id: device-identity
+        track: csa
+        text: "Gave every IoT hop a workload identity: per-device sensor certificates bound to equipment IDs, an allowlisted gateway certificate for gRPC, per-workload Kafka mTLS with topic ACLs, and VerifyFull TLS to Postgres."
+      - id: angular
+        track: swe
+        text: "Rebuilt the live operations dashboard in Angular 22 (standalone OnPush components, signals, Material) over SignalR, with bounded MessageId dedupe for at-least-once alerts; 54 vitest specs."
+
+      # working set (older wording; prefer the lead bullets above)
       - id: arch
         track: both
         text: "Architected an event-driven telemetry platform using .NET 10, Apache Kafka, and Docker to ingest and process real-time sensor streams."
@@ -15,7 +38,7 @@ projects:
         text: "Developed a background worker consuming Kafka events to run ML.NET anomaly detection and trigger automated AI diagnostics."
       - id: signalr
         track: both
-        text: "Implemented a SignalR WebSocket bridge to stream live telemetry events directly to a React dashboard."
+        text: "Implemented a SignalR WebSocket bridge to stream live telemetry events directly to an Angular dashboard."
       - id: terraform
         track: csa
         text: "Drafted infrastructure specifications using Terraform (IaC) and defined GitOps deployment workflows via ArgoCD on Kubernetes (Helm, Istio)."
@@ -36,10 +59,13 @@ projects:
         text: "Implemented distributed W3C tracing, metrics, and logging across the pipeline using OpenTelemetry, aggregating into Prometheus, Tempo, and Loki for Grafana dashboards."
       - id: api-relay
         track: swe
-        text: "Developed an ASP.NET Web API relaying Kafka events via a SignalR WebSocket bridge, pushing live updates to a React/Vite frontend."
+        text: "Developed an ASP.NET Web API relaying Kafka events via a SignalR WebSocket bridge, pushing live updates to an Angular frontend."
 
 
-      # pool
+      # pool. Shared lineage: arch, observability, idempotency, tracing, api-relay, outbox, dlq,
+      # health, config, ci, and reliability-boundary have near-identical twins in
+      # TxMonitoringPlatform/resume.md. Edge/delivery mechanics (settlement, quarantine,
+      # admission, event-time, e2e-chaos, mtls) belong to this project; use them here, not there.
       - id: settlement
         track: swe
         text: "Eliminated data loss on ambiguous upload failures by deleting a buffered reading only after the cloud explicitly named its ID accepted or rejected, retrying everything left unnamed."
@@ -76,6 +102,9 @@ projects:
       - id: ml-provenance
         track: swe
         text: "Persisted detector score, p-value, artifact hash, and warm-up history count beside each telemetry decision so historical anomaly classifications retain their runtime provenance."
+      - id: detector-throughput
+        track: swe
+        text: "Measured ~106K per-machine detector inspections/s in-process (median of 5 runs) with a seeded fault-model replay guarding recall and false positives in CI."
       - id: schema-evolution
         track: swe
         text: "Enforced Protobuf schema-evolution discipline on the gRPC contract with frozen field numbers and reserved tags, backed by a regression test that fails CI on a renumbered field."
@@ -129,7 +158,7 @@ projects:
         text: "TODO: Drafted infrastructure specifications using Terraform (IaC) and implemented GitOps deployment workflows via ArgoCD on Kubernetes (Helm, Istio)."
       - id: api-relay-subsecond
         track: swe
-        text: "TODO: Developed an ASP.NET Web API relaying Kafka events via a SignalR WebSocket bridge, pushing sub-second updates to a React/Vite frontend."
+        text: "TODO: Developed an ASP.NET Web API relaying Kafka events via a SignalR WebSocket bridge, pushing sub-second updates to an Angular frontend."
       - id: production-security
         track: csa
         text: "TODO: Extended workload identity and encrypted transport to sensors, Kafka, Postgres, and observability, backed by production certificate enrollment, rotation, and revocation."

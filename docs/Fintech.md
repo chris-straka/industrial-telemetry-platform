@@ -1,3 +1,7 @@
+> These notes predate the fintech port. The working fintech version of this pipeline is
+> [TxMonitoringPlatform](https://github.com/chris-straka/TxMonitoringPlatform); this repo stays
+> focused on IoT telemetry, anomaly detection, and diagnosis.
+
 # Why this project maps onto payments
 
 The plan is to retarget this at fintech roles. The architecture barely changes; the
