@@ -21,17 +21,17 @@ services:
   web-dashboard:
     image: node:24-alpine
     working_dir: /app
-    # Mount your local source code so Vite sees changes
+    # Mount your local source code so `ng serve` sees changes
     volumes:
       - ./src/Industrial.Web.Dashboard:/app
       - dashboard_node_modules:/app/node_modules
-    # Run the dev server and bind to all interfaces so Docker can expose it
-    command: sh -c "npm ci && npm run dev -- --host"
+    # Run the dev server; angular.json binds it to 0.0.0.0 so Docker can expose it
+    command: sh -c "npm ci && npm run dev"
     ports:
       - "127.0.0.1:5173:5173"
     environment:
-      # This works for the dev server, but remember:
-      # Vite bakes env vars at BUILD time for production
+      # scripts/sync-app-config.mjs copies this into assets/app-config.json, which the
+      # Angular app reads at startup (the production image bakes it from a build arg)
       - VITE_API_URL=http://localhost:5090
 
   web-api:

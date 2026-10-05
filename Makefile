@@ -38,7 +38,7 @@ restore:
 test: ## build and run all .NET regression tests
 	dotnet test IndustrialPlatform.slnx
 
-frontend: ## run the Vite dev server
+frontend: ## run the Angular dev server
 	cd src/Industrial.Web.Dashboard && npm run dev
 
 ls:

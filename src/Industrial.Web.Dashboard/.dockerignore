@@ -5,3 +5,5 @@ dist
 .env.*
 npm-debug.log*
 .DS_Store
+.angular
+out-tsc

@@ -1,0 +1,18 @@
+@import '@angular/material/prebuilt-themes/azure-blue.css';
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: Roboto, 'Helvetica Neue', sans-serif;
+  background: var(--mat-sys-surface, #faf9fd);
+  color: var(--mat-sys-on-surface, #1a1b1e);
+}
+
+.empty {
+  opacity: 0.7;
+  font-style: italic;
+}

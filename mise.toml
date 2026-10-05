@@ -1,4 +1,7 @@
 [tools]
+# Dashboards build from node:24-alpine (see src/*/Dockerfile) and vitest
+# excludes odd Node 25; keep local toolchain on Node 24 LTS.
+node = "24"
 helm = "latest"
 # Pinned so `make infra-validate` uses the same Terraform line as the
 # production-plan workflow instead of failing on an unselected shim.

@@ -1,73 +1,41 @@
-# React + TypeScript + Vite
+# Industrial Web Dashboard (Angular)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Live telemetry wall for the IndustrialPlatform pipeline:
+`sensor emulator -> edge gateway -> ingestion API -> Kafka -> diagnostics/Postgres -> SignalR dashboard`.
 
-Currently, two official plugins are available:
+## Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Angular 22 CLI (`@angular/build` application builder), standalone OnPush components, signals
+  (`signal`/`computed`/`toSignal`) for view state
+- RxJS `TelemetryService` over the SignalR `/telemetryHub` stream
+  (`telemetry_events` / `telemetry_alerts`, JSON string per Kafka record)
+- Angular Material tables for the fleet and anomaly feeds
+- Reactive forms for the equipment visibility filter
+- `vitest` specs colocated with each source file (`*.spec.ts`)
 
-## React Compiler
+## Develop
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```sh
+npm ci
+npm run dev        # ng serve on http://localhost:5173, API via VITE_API_URL
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+`VITE_API_URL` (e.g. `http://localhost:5090`) is copied into the served
+`assets/app-config.json` by `scripts/sync-app-config.mjs` before serve/build.
+Without it the dashboard uses `window.location.origin`.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Verify
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```sh
+npm test            # vitest specs
+npm run build       # Angular production build into dist/
+npm run lint        # eslint
 ```
+
+## Behavior notes
+
+- `MessageId` dedupe is bounded (2,000 events / 500 alerts): Kafka and the
+  alert outbox are at-least-once, so replays must not double-draw.
+- Unticking equipment hides chart lines only; alerts stay global.
+- Charts plot the sensor clock (`OccurredAt`), not arrival time.
+- Sequence gaps are expected sensor-side loss, surfaced per device.

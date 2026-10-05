@@ -95,7 +95,7 @@ entry when implementation changes its premise.
 | `Industrial.Ingestion.Api` | validates gRPC batches and produces `telemetry-events` |
 | `Industrial.Diagnostics.Worker` | Kafka consumer, online IID detection, Postgres, Gemini, alert outbox |
 | `Industrial.Web.Api` | per-instance Kafka broadcast subscription and SignalR relay |
-| `Industrial.Web.Dashboard` | React/Vite live dashboard with bounded `MessageId` dedupe |
+| `Industrial.Web.Dashboard` | Angular 22 live dashboard (signals, Material) with bounded `MessageId` dedupe |
 | `Industrial.Data.ML` | builds the IID detector configuration/schema artifact |
 | `tests/*` | focused regression suites for the reliability seams |
 
@@ -125,7 +125,7 @@ Run checks proportional to the change. Before handing off a repository-wide chan
 ```sh
 dotnet build IndustrialPlatform.slnx --no-restore
 dotnet test IndustrialPlatform.slnx --no-restore
-cd src/Industrial.Web.Dashboard && npm run lint && npm run build
+cd src/Industrial.Web.Dashboard && npm run lint && npm test && npm run build
 docker compose config --quiet
 dotnet ef migrations has-pending-model-changes --project src/Industrial.Diagnostics.Worker --no-build
 ```

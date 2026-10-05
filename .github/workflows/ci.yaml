@@ -50,6 +50,10 @@ jobs:
         working-directory: src/Industrial.Web.Dashboard
         run: npm run lint
 
+      - name: Test dashboard
+        working-directory: src/Industrial.Web.Dashboard
+        run: npm test
+
       - name: Build dashboard
         working-directory: src/Industrial.Web.Dashboard
         run: npm run build
