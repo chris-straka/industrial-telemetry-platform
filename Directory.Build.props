@@ -14,4 +14,12 @@
     <NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>
 
+  <!-- Grpc.Tools ships only an x64 protoc for macOS, which needs Rosetta on Apple Silicon. When
+       Homebrew's native protoc and grpc_csharp_plugin are installed, use them instead. Linux CI and
+       the Docker builds keep the packaged binaries. -->
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('OSX')) And '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64' And Exists('/opt/homebrew/bin/protoc') And Exists('/opt/homebrew/bin/grpc_csharp_plugin')">
+    <Protobuf_ProtocFullPath>/opt/homebrew/bin/protoc</Protobuf_ProtocFullPath>
+    <gRPC_PluginFullPath>/opt/homebrew/bin/grpc_csharp_plugin</gRPC_PluginFullPath>
+  </PropertyGroup>
+
 </Project>
